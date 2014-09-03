@@ -346,7 +346,6 @@ class SqlParser extends StandardTokenParsers with PackratParsers {
     expression ~ "[" ~ expression <~ "]" ^^ {
       case base ~ _ ~ ordinal => GetItem(base, ordinal)
     } |
-    dotExpressionHeader |
     expression ~ "." ~ ident ^^ {
       case base ~ _ ~ fieldName => GetField(base, fieldName)
     } |
@@ -356,6 +355,7 @@ class SqlParser extends StandardTokenParsers with PackratParsers {
     "(" ~> expression <~ ")" |
     function |
     "-" ~> literal ^^ UnaryMinus |
+    dotExpressionHeader |
     ident ^^ UnresolvedAttribute |
     "*" ^^^ Star(None) |
     literal
