@@ -354,6 +354,18 @@ private[hive] class ClientWrapper(
     qlTable
   }
 
+  override def createView(view: HiveTable): Unit = withHiveState {
+    val tbl = new metadata.Table(view.database, view.name)
+    tbl.setTableType(HTableType.VIRTUAL_VIEW)
+    tbl.setSerializationLib(null)
+    tbl.clearSerDeInfo()
+    tbl.setViewOriginalText(view.viewText.get)
+    tbl.setViewExpandedText(view.viewText.get)
+    tbl.setFields(view.schema.map(c => new FieldSchema(c.name, c.hiveType, c.comment)).asJava)
+    view.properties.foreach { case (k, v) => tbl.setProperty(k, v) }
+    client.createTable(tbl)
+  }
+
   override def createTable(table: HiveTable): Unit = withHiveState {
     val qlTable = toQlTable(table)
     client.createTable(qlTable)

@@ -588,12 +588,39 @@ private[hive] class HiveMetastoreCatalog(val client: ClientInterface, hive: Hive
       // Wait until children are resolved.
       case p: LogicalPlan if !p.childrenResolved => p
       case p: LogicalPlan if p.resolved => p
+
+      case p @ CreateTableAsSelect(table, child, allowExisting) if table.tableType == VirtualView =>
+        val childSchema = child.output.map { attr =>
+          HiveColumn(attr.name, HiveMetastoreTypes.toMetastoreType(attr.dataType), null)
+        }
+
+        val newNames = table.schema.map(_.name)
+
+        val schema = if (table.schema.nonEmpty) {
+          assert(newNames.length == childSchema.length)
+          assert(newNames.map(_.toLowerCase).distinct.length == newNames.length)
+          childSchema.zip(table.schema).map {
+            case (f1, f2) => HiveColumn(f1.name, f1.hiveType, f2.comment)
+          }
+        } else childSchema
+
+        val (dbName, tblName) = processDatabaseAndTableName(
+          table.specifiedDatabase.getOrElse(client.currentDatabase), table.name)
+
+        execution.CreateViewAsSelect(
+          table.copy(
+            specifiedDatabase = Some(dbName),
+            name = tblName,
+            schema = schema),
+          newNames,
+          allowExisting)
+
       case p @ CreateTableAsSelect(table, child, allowExisting) =>
         val schema = if (table.schema.nonEmpty) {
           table.schema
         } else {
           child.output.map {
-            attr => new HiveColumn(
+            attr => HiveColumn(
               attr.name,
               HiveMetastoreTypes.toMetastoreType(attr.dataType), null)
           }
