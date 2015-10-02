@@ -571,7 +571,8 @@ https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C
         maybeComment,
         allowExisting,
         maybeProperties,
-        maybeColumns
+        maybeColumns,
+        maybePartCols
       ) = getClauses(
         Seq(
           "TOK_TABNAME",
@@ -579,50 +580,58 @@ https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C
           "TOK_TABLECOMMENT",
           "TOK_IFNOTEXISTS",
           "TOK_TABLEPROPERTIES",
-          "TOK_TABCOLNAME"),
+          "TOK_TABCOLNAME",
+          "TOK_VIEWPARTCOLS"),
         children)
 
-      val (db, viewName) = extractDbNameTableName(viewNameParts)
+      if (maybePartCols.isDefined) {
+        val sql = ctx.getTokenRewriteStream
+          .toString(query.parent.getTokenStartIndex, query.parent.getTokenStopIndex)
+        println(sql)
+        HiveNativeCommand(sql)
+      } else {
+        val (db, viewName) = extractDbNameTableName(viewNameParts)
 
-      val originalText = ctx.getTokenRewriteStream
-        .toString(query.getTokenStartIndex, query.getTokenStopIndex)
+        val originalText = ctx.getTokenRewriteStream
+          .toString(query.getTokenStartIndex, query.getTokenStopIndex)
 
-      val schema = maybeColumns.map { cols =>
-        BaseSemanticAnalyzer.getColumns(cols, true).asScala.map { field =>
-          HiveColumn(field.getName, field.getType, field.getComment)
-        }
-      }.getOrElse(Seq.empty[HiveColumn])
-
-      val properties = scala.collection.mutable.Map.empty[String, String]
-
-      maybeProperties.foreach {
-        case Token("TOK_TABLEPROPERTIES", list :: Nil) =>
-          properties ++= getProperties(list)
-      }
-
-      maybeComment.foreach {
-        case Token("TOK_TABLECOMMENT", child :: Nil) =>
-          val comment = BaseSemanticAnalyzer.unescapeSQLString(child.getText)
-          if (comment ne null) {
-            properties += ("comment" -> comment)
+        val schema = maybeColumns.map { cols =>
+          BaseSemanticAnalyzer.getColumns(cols, true).asScala.map { field =>
+            HiveColumn(field.getName, field.getType, field.getComment)
           }
+        }.getOrElse(Seq.empty[HiveColumn])
+
+        val properties = scala.collection.mutable.Map.empty[String, String]
+
+        maybeProperties.foreach {
+          case Token("TOK_TABLEPROPERTIES", list :: Nil) =>
+            properties ++= getProperties(list)
+        }
+
+        maybeComment.foreach {
+          case Token("TOK_TABLECOMMENT", child :: Nil) =>
+            val comment = BaseSemanticAnalyzer.unescapeSQLString(child.getText)
+            if (comment ne null) {
+              properties += ("comment" -> comment)
+            }
+        }
+
+        val tableDesc = HiveTable(
+          specifiedDatabase = db,
+          name = viewName,
+          schema = schema,
+          partitionColumns = Seq.empty[HiveColumn],
+          properties = properties.toMap,
+          serdeProperties = Map[String, String](),
+          tableType = VirtualView,
+          location = None,
+          inputFormat = None,
+          outputFormat = None,
+          serde = None,
+          viewText = Some(originalText))
+
+        CreateTableAsSelect(tableDesc, nodeToPlan(query), allowExisting.isDefined)
       }
-
-      val tableDesc = HiveTable(
-        specifiedDatabase = db,
-        name = viewName,
-        schema = schema,
-        partitionColumns = Seq.empty[HiveColumn],
-        properties = properties.toMap,
-        serdeProperties = Map[String, String](),
-        tableType = VirtualView,
-        location = None,
-        inputFormat = None,
-        outputFormat = None,
-        serde = None,
-        viewText = Some(originalText))
-
-      CreateTableAsSelect(tableDesc, nodeToPlan(query), allowExisting.isDefined)
 
     case Token("TOK_CREATETABLE", children)
         if children.collect { case t @ Token("TOK_QUERY", _) => t }.nonEmpty =>
