@@ -272,8 +272,7 @@ class HiveContext(sc: SparkContext) extends SQLContext(sc) with Logging {
   }
 
   protected[sql] override def parseSql(sql: String): LogicalPlan = {
-    var state = SessionState.get()
-    if (state == null) {
+    if (SessionState.get() == null) {
       SessionState.setCurrentSessionState(tlSession.get().asInstanceOf[SQLSession].sessionState)
     }
     super.parseSql(substitutor.substitute(hiveconf, sql))

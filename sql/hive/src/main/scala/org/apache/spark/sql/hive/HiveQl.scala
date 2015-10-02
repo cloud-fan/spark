@@ -110,7 +110,6 @@ private[hive] object HiveQl extends Logging {
     "TOK_CREATEFUNCTION",
     "TOK_CREATEINDEX",
     "TOK_CREATEROLE",
-    "TOK_CREATEVIEW",
 
     "TOK_DESCDATABASE",
     "TOK_DESCFUNCTION",
@@ -248,7 +247,7 @@ private[hive] object HiveQl extends Logging {
   /**
    * Returns the AST for the given SQL string.
    */
-  def getAst(sql: String): ASTNode = {
+  def getAst(sql: String): (Context, ASTNode) = {
     /*
      * Context has to be passed in hive0.13.1.
      * Otherwise, there will be Null pointer exception,
@@ -256,8 +255,7 @@ private[hive] object HiveQl extends Logging {
      */
     val hContext = new Context(SessionState.get().getConf())
     val node = ParseUtils.findRootNonNullToken((new ParseDriver).parse(sql, hContext))
-    hContext.clear()
-    node
+    hContext -> node
   }
 
   /**
@@ -280,15 +278,18 @@ private[hive] object HiveQl extends Logging {
   /** Creates LogicalPlan for a given HiveQL string. */
   def createPlan(sql: String): LogicalPlan = {
     try {
-      val tree = getAst(sql)
-      if (nativeCommands contains tree.getText) {
+      val (ctx, tree) = getAst(sql)
+      val result = if (nativeCommands contains tree.getText) {
         HiveNativeCommand(sql)
       } else {
+        implicit val _ctx = ctx
         nodeToPlan(tree) match {
           case NativePlaceholder => HiveNativeCommand(sql)
           case other => other
         }
       }
+      ctx.clear()
+      result
     } catch {
       case pe: org.apache.hadoop.hive.ql.parse.ParseException =>
         pe.getMessage match {
@@ -304,7 +305,7 @@ private[hive] object HiveQl extends Logging {
         throw new AnalysisException(
           s"""
             |Unsupported language features in query: $sql
-            |${dumpTree(getAst(sql))}
+            |${dumpTree(getAst(sql)._2)}
             |$e
             |${e.getStackTrace.head}
           """.stripMargin)
@@ -342,7 +343,8 @@ private[hive] object HiveQl extends Logging {
     }
   }
 
-  protected def getClauses(clauseNames: Seq[String], nodeList: Seq[ASTNode]): Seq[Option[Node]] = {
+  protected def getClauses(
+      clauseNames: Seq[String], nodeList: Seq[ASTNode]): Seq[Option[ASTNode]] = {
     var remainingNodes = nodeList
     val clauses = clauseNames.map { clauseName =>
       val (matches, nonMatches) = remainingNodes.partition(_.getText.toUpperCase == clauseName)
@@ -423,15 +425,12 @@ private[hive] object HiveQl extends Logging {
   }
 
   protected def extractDbNameTableName(tableNameParts: Node): (Option[String], String) = {
-    val (db, tableName) =
-      tableNameParts.getChildren.asScala.map {
-        case Token(part, Nil) => cleanIdentifier(part)
-      } match {
-        case Seq(tableOnly) => (None, tableOnly)
-        case Seq(databaseName, table) => (Some(databaseName), table)
-      }
-
-    (db, tableName)
+    tableNameParts.getChildren.asScala.map {
+      case Token(part, Nil) => cleanIdentifier(part)
+    } match {
+      case Seq(tableOnly) => (None, tableOnly)
+      case Seq(databaseName, table) => (Some(databaseName), table)
+    }
   }
 
   protected def extractTableIdent(tableNameParts: Node): Seq[String] = {
@@ -489,7 +488,7 @@ https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C
       }
   }
 
-  protected def nodeToPlan(node: Node): LogicalPlan = node match {
+  protected def nodeToPlan(node: Node)(implicit ctx: Context): LogicalPlan = node match {
     // Special drop table that also uncaches.
     case Token("TOK_DROPTABLE",
            Token("TOK_TABNAME", tableNameParts) ::
@@ -561,6 +560,77 @@ https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C
           // All other cases.
           case _ => NativePlaceholder
         }
+      }
+
+    case Token("TOK_CREATEVIEW", children)
+        if children.collect { case t @ Token("TOK_QUERY", _) => t }.nonEmpty =>
+
+      val Seq(
+        Some(viewNameParts),
+        Some(query),
+        maybeComment,
+        allowExisting,
+        maybeProperties,
+        maybeColumns,
+        maybePartCols
+      ) = getClauses(
+        Seq(
+          "TOK_TABNAME",
+          "TOK_QUERY",
+          "TOK_TABLECOMMENT",
+          "TOK_IFNOTEXISTS",
+          "TOK_TABLEPROPERTIES",
+          "TOK_TABCOLNAME",
+          "TOK_VIEWPARTCOLS"),
+        children)
+
+      if (maybePartCols.isDefined) {
+        val sql = ctx.getTokenRewriteStream
+          .toString(query.parent.getTokenStartIndex, query.parent.getTokenStopIndex)
+        println(sql)
+        HiveNativeCommand(sql)
+      } else {
+        val (db, viewName) = extractDbNameTableName(viewNameParts)
+
+        val originalText = ctx.getTokenRewriteStream
+          .toString(query.getTokenStartIndex, query.getTokenStopIndex)
+
+        val schema = maybeColumns.map { cols =>
+          BaseSemanticAnalyzer.getColumns(cols, true).asScala.map { field =>
+            HiveColumn(field.getName, field.getType, field.getComment)
+          }
+        }.getOrElse(Seq.empty[HiveColumn])
+
+        val properties = scala.collection.mutable.Map.empty[String, String]
+
+        maybeProperties.foreach {
+          case Token("TOK_TABLEPROPERTIES", list :: Nil) =>
+            properties ++= getProperties(list)
+        }
+
+        maybeComment.foreach {
+          case Token("TOK_TABLECOMMENT", child :: Nil) =>
+            val comment = BaseSemanticAnalyzer.unescapeSQLString(child.getText)
+            if (comment ne null) {
+              properties += ("comment" -> comment)
+            }
+        }
+
+        val tableDesc = HiveTable(
+          specifiedDatabase = db,
+          name = viewName,
+          schema = schema,
+          partitionColumns = Seq.empty[HiveColumn],
+          properties = properties.toMap,
+          serdeProperties = Map[String, String](),
+          tableType = VirtualView,
+          location = None,
+          inputFormat = None,
+          outputFormat = None,
+          serde = None,
+          viewText = Some(originalText))
+
+        CreateTableAsSelect(tableDesc, nodeToPlan(query), allowExisting.isDefined)
       }
 
     case Token("TOK_CREATETABLE", children)
@@ -1102,7 +1172,7 @@ https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C
 
   val allJoinTokens = "(TOK_.*JOIN)".r
   val laterViewToken = "TOK_LATERAL_VIEW(.*)".r
-  def nodeToRelation(node: Node): LogicalPlan = node match {
+  def nodeToRelation(node: Node)(implicit ctx: Context): LogicalPlan = node match {
     case Token("TOK_SUBQUERY",
            query :: Token(alias, Nil) :: Nil) =>
       Subquery(cleanIdentifier(alias), nodeToPlan(query))
