@@ -649,7 +649,7 @@ class Analyzer(
           val resolvedOrdering =
             resolvedAggregate.aggregateExpressions.asInstanceOf[Seq[Alias]].map(_.child)
 
-          // Collects `AggregateExpression` and `AttributeReference` that is un-evaluable as
+          // Collects aggregate expressions and grouping expressions that are un-evaluable as
           // ordering expressions and need to push down and add them into the aggregate list, we
           // will project them away finally.
           val needsPushDown = ArrayBuffer.empty[NamedExpression]
