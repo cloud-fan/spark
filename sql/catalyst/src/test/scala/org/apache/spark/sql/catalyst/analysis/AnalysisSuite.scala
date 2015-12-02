@@ -232,8 +232,8 @@ class AnalysisSuite extends AnalysisTest {
       .orderBy('a1.asc, 'c.asc)
 
     val expected = testRelation2
-      .groupBy(a, c)(alias1, alias2, alias3)
-      .orderBy(alias1.toAttribute.asc, alias2.toAttribute.asc)
+      .groupBy(a, c)(alias1, alias2, alias3, c)
+      .orderBy(alias1.toAttribute.asc, c.asc)
       .select(alias1.toAttribute, alias2.toAttribute, alias3.toAttribute)
     checkAnalysis(plan, expected)
   }

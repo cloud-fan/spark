@@ -62,7 +62,8 @@ object DefaultOptimizer extends Optimizer {
       RemoveDispensableExpressions,
       SimplifyFilters,
       SimplifyCasts,
-      SimplifyCaseConversionExpressions) ::
+      SimplifyCaseConversionExpressions,
+      RemoveUnnecessarySortOrderEvaluation) ::
     Batch("Decimal Optimizations", FixedPoint(100),
       DecimalAggregates) ::
     Batch("LocalRelation", FixedPoint(100),
@@ -917,5 +918,65 @@ object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
     case a @ Aggregate(grouping, _, _) =>
       val newGrouping = grouping.filter(!_.foldable)
       a.copy(groupingExpressions = newGrouping)
+  }
+}
+
+/**
+ * Remove the unnecessary evaluation from SortOrder, if they are already in child's output.
+ *
+ * As an example, "select a + 1, b from t order by a + 1" will be analyzed into:
+ * {{{
+ *   Project(reference#2, b#0,
+ *     Sort('a#1 + 1,
+ *       Project(('a + 1).as("_c0")#2, b#0, a#1),
+ *         Relation)
+ * }}}
+ * Then this rule can optimize it into:
+ * {{{
+ *   Project(reference#2, b#0,
+ *     Sort(reference#2,
+ *       Project(('a + 1).as("_c0")#2, b#0, a#1),
+ *         Relation)
+ * }}}
+ * Finally other optimize rules(column pruning, project collapse) can turn it into:
+ * {{{
+ *   Sort(reference#2,
+ *     Project(('a + 1).as("_c0")#2, b#0),
+ *       Relation)
+ * }}}
+ */
+object RemoveUnnecessarySortOrderEvaluation extends Rule[LogicalPlan] {
+
+  private def optimizeSortOrders(orders: Seq[SortOrder], childOutput: Seq[NamedExpression]) = {
+    orders.map { order =>
+      val newChild = order.child transformDown { case expr =>
+        val index = childOutput.indexWhere {
+          case Alias(child, _) => child semanticEquals expr
+          case other => other semanticEquals expr
+        }
+        if (index == -1) {
+          expr
+        } else {
+          childOutput(index).toAttribute
+        }
+      }
+      order.copy(child = newChild)
+    }
+  }
+
+  def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    case sort @ Sort(sortOrders, _, Project(projectList, _)) =>
+      sort.copy(order = optimizeSortOrders(sortOrders, projectList))
+
+    // TODO: remove unnecessary aggregate expressions as well.
+    // For example, `SELECT a, sum(b) FROM t GROUP BY a ORDER BY sum(b)`, the logical plan will be:
+    // Project('a#0)
+    //   Sort('aggOrder#2)
+    //     Aggregate('a#0, sum('b).as("c1")#1, sum('b).as("aggOrder")#2)
+    // And we should optimize it into:
+    // Sort('c1#1)
+    //   Aggregate('a#0, sum('b).as("c1")#1)
+    case sort @ Sort(sortOrders, _, Aggregate(_, aggExprs, _)) =>
+      sort.copy(order = optimizeSortOrders(sortOrders, aggExprs))
   }
 }
