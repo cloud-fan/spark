@@ -35,10 +35,10 @@ class AggregateOptimizeSuite extends PlanTest {
   test("replace distinct with aggregate") {
     val input = LocalRelation('a.int, 'b.int)
 
-    val query = Distinct(input)
-    val optimized = Optimize.execute(query.analyze)
+    val query = Distinct(input).analyze
+    val optimized = Optimize.execute(query)
 
-    val correctAnswer = Aggregate(input.output, input.output, input)
+    val correctAnswer = Aggregate(input.output, input.output, input).analyze
 
     comparePlans(optimized, correctAnswer)
   }
@@ -46,11 +46,10 @@ class AggregateOptimizeSuite extends PlanTest {
   test("remove literals in grouping expression") {
     val input = LocalRelation('a.int, 'b.int)
 
-    val query =
-      input.groupBy('a, Literal(1), Literal(1) + Literal(2))(sum('b))
+    val query = input.groupBy('a, Literal(1), Literal(1) + Literal(2))(sum('b)).analyze
     val optimized = Optimize.execute(query)
 
-    val correctAnswer = input.groupBy('a)(sum('b))
+    val correctAnswer = input.groupBy('a)(sum('b)).analyze
 
     comparePlans(optimized, correctAnswer)
   }
