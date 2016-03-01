@@ -168,7 +168,8 @@ def main():
         for module in modules_to_test:
             if python_implementation not in module.blacklisted_python_implementations:
                 for test_goal in module.python_test_goals:
-                    task_queue.put((python_exec, test_goal))
+                    if "dataframe" in test_goal:
+                        task_queue.put((python_exec, test_goal))
 
     def process_queue(task_queue):
         while True:

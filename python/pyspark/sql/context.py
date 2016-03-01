@@ -327,7 +327,7 @@ class SQLContext(object):
 
         # convert python objects to sql data
         data = [schema.toInternal(row) for row in data]
-        return self._sc.parallelize(data), schema
+        return self._sc.parallelize(data, 1), schema
 
     @since(1.3)
     @ignore_unicode_prefix

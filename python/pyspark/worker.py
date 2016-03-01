@@ -103,7 +103,11 @@ def main(infile, outfile):
 
         def process():
             iterator = deserializer.load_stream(infile)
-            serializer.dump_stream(func(split_index, iterator), outfile)
+            result = iter(list(func(split_index, iterator)))
+            f = open('/Users/cloud/myfile','w')
+            f.write(str(round(time.time() * 1000)) + "\n") # python will convert \n to os.linesep
+            f.close() # you can omit in most cases as the destructor will call it
+            serializer.dump_stream(result, outfile)
 
         if profiler:
             profiler.profile(process)

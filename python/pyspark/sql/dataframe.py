@@ -1530,7 +1530,7 @@ class PipelinedDataFrame(DataFrame):
         else:
             deserializer = AutoBatchedSerializer(PickleSerializer())
 
-        if output_binary:
+        if False:
             serializer = PickleSerializer()
         else:
             serializer = AutoBatchedSerializer(PickleSerializer())
@@ -1649,4 +1649,11 @@ def _test():
 
 
 if __name__ == "__main__":
-    _test()
+    from pyspark.context import SparkContext
+    from pyspark.sql import Row, SQLContext
+    import pyspark.sql.dataframe
+    sc = SparkContext('local[4]', 'PythonTest')
+    ctx = SQLContext(sc)
+    data = [(i, str(i)) for i in range(1000000)]
+    df = ctx.createDataFrame(data, ("key", "value"))
+    df.map(lambda row: {"key": row.key + 1, "value": row.value}).count()

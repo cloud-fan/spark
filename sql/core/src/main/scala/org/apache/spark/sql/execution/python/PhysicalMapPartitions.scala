@@ -17,6 +17,9 @@
 
 package org.apache.spark.sql.execution.python
 
+import java.io.FileWriter
+import java.nio.file.{Paths, Files}
+
 import scala.collection.JavaConverters._
 
 import net.razorvine.pickle.{Pickler, Unpickler}
@@ -81,21 +84,25 @@ case class PhysicalMapPartitions(
 
       val toUnsafe = UnsafeProjection.create(output, output)
 
-      if (isOutputPickled) {
+      var size = 0
+      val re = {
         val row = new GenericMutableRow(1)
         outputIterator.map { bytes =>
-          row(0) = bytes
-          toUnsafe(row)
-        }
-      } else {
-        val unpickle = new Unpickler
-        outputIterator.flatMap { pickedResult =>
-          val unpickledBatch = unpickle.loads(pickedResult)
-          unpickledBatch.asInstanceOf[java.util.ArrayList[Any]].asScala
-        }.map { result =>
-          toUnsafe(EvaluatePython.fromJava(result, schema).asInstanceOf[InternalRow])
+          size += bytes.length
+          row
         }
       }
+
+      re.toArray
+
+      val s = scala.io.Source.fromFile("/Users/cloud/myfile").getLines().next()
+      val t = System.currentTimeMillis() - java.lang.Double.valueOf(s).longValue()
+      val fw = new FileWriter("/Users/cloud/myfile", true)
+      try {
+        fw.append("done: " + t + "  size: " + size + "\n")
+      } finally fw.close()
+
+      re
     }
   }
 }
