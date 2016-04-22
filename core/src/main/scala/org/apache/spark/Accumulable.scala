@@ -179,7 +179,7 @@ class Accumulable[R, T] private (
     // metrics, e.g. internal SQL metrics, which are per-operator.
     val taskContext = TaskContext.get()
     if (taskContext != null) {
-      taskContext.registerAccumulator(this)
+      // taskContext.registerAccumulator(this)
     }
   }
 
