@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution.metric
 
+import java.text.NumberFormat
+
 import org.apache.spark._
 import org.apache.spark.scheduler.AccumulableInfo
 import org.apache.spark.util.Utils
@@ -103,7 +105,7 @@ private[sql] object SQLMetrics {
    */
   def stringValue(metricsType: String, values: Seq[Long]): String = {
     if (metricsType == "sum") {
-      values.sum.toString
+      NumberFormat.getInstance().format(values.sum)
     } else {
       val strFormat: Long => String = if (metricsType == "size") {
         Utils.bytesToString
