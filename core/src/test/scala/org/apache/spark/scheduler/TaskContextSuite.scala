@@ -148,12 +148,12 @@ class TaskContextSuite extends SparkFunSuite with BeforeAndAfter with LocalSpark
     sc = new SparkContext("local[1,4]", "test")
     val param = AccumulatorParam.LongAccumulatorParam
     // Create 2 accumulators, one that counts failed values and another that doesn't
-    val acc1 = new Accumulator(0L, param, Some("x"), countFailedValues = true)
-    val acc2 = new Accumulator(0L, param, Some("y"), countFailedValues = false)
+    val acc1 = new LongAccumulator(Some("x"), true)
+    val acc2 = new LongAccumulator(Some("y"), false)
     // Fail first 3 attempts of every task. This means each task should be run 4 times.
     sc.parallelize(1 to 10, 10).map { i =>
-      acc1 += 1
-      acc2 += 1
+      acc1 += 1L
+      acc2 += 1L
       if (TaskContext.get.attemptNumber() <= 2) {
         throw new Exception("you did something wrong")
       } else {
@@ -162,15 +162,15 @@ class TaskContextSuite extends SparkFunSuite with BeforeAndAfter with LocalSpark
     }.count()
     // The one that counts failed values should be 4x the one that didn't,
     // since we ran each task 4 times
-    assert(Accumulators.get(acc1.id).get.value === 40L)
-    assert(Accumulators.get(acc2.id).get.value === 10L)
+    assert(AccumulatorContext.get(acc1.id).get.value === 40L)
+    assert(AccumulatorContext.get(acc2.id).get.value === 10L)
   }
 
   test("failed tasks collect only accumulators whose values count during failures") {
     sc = new SparkContext("local", "test")
     val param = AccumulatorParam.LongAccumulatorParam
-    val acc1 = new Accumulator(0L, param, Some("x"), countFailedValues = true)
-    val acc2 = new Accumulator(0L, param, Some("y"), countFailedValues = false)
+    val acc1 = new LongAccumulator(Some("x"), true)
+    val acc2 = new LongAccumulator(Some("y"), false)
     // Create a dummy task. We won't end up running this; we just want to collect
     // accumulator updates from it.
     val taskMetrics = new TaskMetrics

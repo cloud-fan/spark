@@ -17,7 +17,7 @@
 
 package org.apache.spark.executor
 
-import org.apache.spark.{InternalAccumulator, LongAccumulator}
+import org.apache.spark.InternalAccumulator
 import org.apache.spark.annotation.DeveloperApi
 
 
@@ -28,24 +28,26 @@ import org.apache.spark.annotation.DeveloperApi
  */
 @DeveloperApi
 class ShuffleWriteMetrics private[spark] () extends Serializable {
-  private[executor] val _bytesWritten = new LongAccumulator
-  private[executor] val _recordsWritten = new LongAccumulator
-  private[executor] val _writeTime = new LongAccumulator
+  import InternalAccumulator.shuffleWrite._
+
+  private[executor] val _bytesWritten = new InternalLongAccumulator(BYTES_WRITTEN)
+  private[executor] val _recordsWritten = new InternalLongAccumulator(RECORDS_WRITTEN)
+  private[executor] val _writeTime = new InternalLongAccumulator(WRITE_TIME)
 
   /**
    * Number of bytes written for the shuffle by this task.
    */
-  def bytesWritten: Long = _bytesWritten.value
+  def bytesWritten: Long = _bytesWritten.localValue
 
   /**
    * Total number of records written to the shuffle by this task.
    */
-  def recordsWritten: Long = _recordsWritten.value
+  def recordsWritten: Long = _recordsWritten.localValue
 
   /**
    * Time the task spent blocking on writes to disk or buffer cache, in nanoseconds.
    */
-  def writeTime: Long = _writeTime.value
+  def writeTime: Long = _writeTime.localValue
 
   private[spark] def incBytesWritten(v: Long): Unit = _bytesWritten.add(v)
   private[spark] def incRecordsWritten(v: Long): Unit = _recordsWritten.add(v)

@@ -17,7 +17,7 @@
 
 package org.apache.spark.executor
 
-import org.apache.spark.{InternalAccumulator, LongAccumulator}
+import org.apache.spark.InternalAccumulator
 import org.apache.spark.annotation.DeveloperApi
 
 
@@ -40,18 +40,20 @@ object DataReadMethod extends Enumeration with Serializable {
  */
 @DeveloperApi
 class InputMetrics private[spark] () extends Serializable {
-  private[executor] val _bytesRead = new LongAccumulator
-  private[executor] val _recordsRead = new LongAccumulator
+  import InternalAccumulator.input._
+
+  private[executor] val _bytesRead = new InternalLongAccumulator(BYTES_READ)
+  private[executor] val _recordsRead = new InternalLongAccumulator(RECORDS_READ)
 
   /**
    * Total number of bytes read.
    */
-  def bytesRead: Long = _bytesRead.value
+  def bytesRead: Long = _bytesRead.localValue
 
   /**
    * Total number of records read.
    */
-  def recordsRead: Long = _recordsRead.value
+  def recordsRead: Long = _recordsRead.localValue
 
   private[spark] def incBytesRead(v: Long): Unit = _bytesRead.add(v)
   private[spark] def incRecordsRead(v: Long): Unit = _recordsRead.add(v)

@@ -1543,13 +1543,12 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
   }
 
   test("misbehaved accumulator should not crash DAGScheduler and SparkContext") {
-    val acc = new Accumulator[Int](0, new AccumulatorParam[Int] {
-      override def addAccumulator(t1: Int, t2: Int): Int = t1 + t2
-      override def zero(initialValue: Int): Int = 0
-      override def addInPlace(r1: Int, r2: Int): Int = {
-        throw new DAGSchedulerSuiteDummyException
-      }
-    })
+    val acc = new Accumulator[Int, Int](None, false) {
+      override def add(v: Int): Unit = {}
+      override def merge(v: Int): Unit = throw new DAGSchedulerSuiteDummyException
+      override def localValue: Int = 0
+      override def isZero(v: Int): Boolean = v == 0
+    }
 
     // Run this on executors
     sc.parallelize(1 to 10, 2).foreach { item => acc.add(1) }
@@ -1613,14 +1612,14 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
 
   test("accumulator not calculated for resubmitted result stage") {
     // just for register
-    val accum = new Accumulator[Int](0, AccumulatorParam.IntAccumulatorParam)
+    val accum = sc.longAccumulator
     val finalRdd = new MyRDD(sc, 1, Nil)
     submit(finalRdd, Array(0))
     completeWithAccumulator(accum.id, taskSets(0), Seq((Success, 42)))
     completeWithAccumulator(accum.id, taskSets(0), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
 
-    val accVal = Accumulators.originals(accum.id).get.get.value
+    val accVal = AccumulatorContext.originals.get(accum.id).get.value
 
     assert(accVal === 1)
 
@@ -1631,9 +1630,9 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
     val acc1 = sc.accumulator(0L, "ingenieur")
     val acc2 = sc.accumulator(0L, "boulanger")
     val acc3 = sc.accumulator(0L, "agriculteur")
-    assert(Accumulators.get(acc1.id).isDefined)
-    assert(Accumulators.get(acc2.id).isDefined)
-    assert(Accumulators.get(acc3.id).isDefined)
+    assert(AccumulatorContext.get(acc1.id).isDefined)
+    assert(AccumulatorContext.get(acc2.id).isDefined)
+    assert(AccumulatorContext.get(acc3.id).isDefined)
     val accInfo1 = acc1.toInfo(Some(15L), None)
     val accInfo2 = acc2.toInfo(Some(13L), None)
     val accInfo3 = acc3.toInfo(Some(18L), None)
@@ -1641,9 +1640,9 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with Timeou
     val exceptionFailure = new ExceptionFailure(new SparkException("fondue?"), accumUpdates)
     submit(new MyRDD(sc, 1, Nil), Array(0))
     runEvent(makeCompletionEvent(taskSets.head.tasks.head, exceptionFailure, "result"))
-    assert(Accumulators.get(acc1.id).get.value === 15L)
-    assert(Accumulators.get(acc2.id).get.value === 13L)
-    assert(Accumulators.get(acc3.id).get.value === 18L)
+    assert(AccumulatorContext.get(acc1.id).get.value === 15L)
+    assert(AccumulatorContext.get(acc2.id).get.value === 13L)
+    assert(AccumulatorContext.get(acc3.id).get.value === 18L)
   }
 
   test("reduce tasks should be placed locally with map output") {

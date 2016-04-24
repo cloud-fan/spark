@@ -38,7 +38,7 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
 
   override def afterEach(): Unit = {
     try {
-      Accumulators.clear()
+      AccumulatorContext.clear()
     } finally {
       super.afterEach()
     }
@@ -61,7 +61,7 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
 
   test ("basic accumulation") {
     sc = new SparkContext("local", "test")
-    val acc : Accumulator[Int] = sc.accumulator(0)
+    val acc: Accumulator[Int, Int] = sc.accumulator(0)
 
     val d = sc.parallelize(1 to 20)
     d.foreach{x => acc += x}
@@ -71,21 +71,17 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
     val maxInt = Integer.MAX_VALUE.toLong
     d.foreach{x => longAcc += maxInt + x}
     longAcc.value should be (210L + maxInt * 20)
-  }
 
-  test("value not assignable from tasks") {
-    sc = new SparkContext("local", "test")
-    val acc : Accumulator[Int] = sc.accumulator(0)
-
-    val d = sc.parallelize(1 to 20)
-    an [Exception] should be thrownBy {d.foreach{x => acc.value = x}}
+    val newLongAcc = sc.longAccumulator
+    d.foreach{x => newLongAcc += maxInt + x}
+    newLongAcc.value should be (210L + maxInt * 20)
   }
 
   test ("add value to collection accumulators") {
     val maxI = 1000
     for (nThreads <- List(1, 10)) { // test single & multi-threaded
       sc = new SparkContext("local[" + nThreads + "]", "test")
-      val acc: Accumulable[mutable.Set[Any], Any] = sc.accumulable(new mutable.HashSet[Any]())
+      val acc: Accumulator[Any, mutable.Set[Any]] = sc.accumulable(new mutable.HashSet[Any]())
       val d = sc.parallelize(1 to maxI)
       d.foreach {
         x => acc += x
@@ -102,7 +98,7 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
     val maxI = 1000
     for (nThreads <- List(1, 10)) { // test single & multi-threaded
       sc = new SparkContext("local[" + nThreads + "]", "test")
-      val acc: Accumulable[mutable.Set[Any], Any] = sc.accumulable(new mutable.HashSet[Any]())
+      val acc: Accumulator[Any, mutable.Set[Any]] = sc.accumulable(new mutable.HashSet[Any]())
       val d = sc.parallelize(1 to maxI)
       an [SparkException] should be thrownBy {
         d.foreach {
@@ -143,11 +139,11 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
     val maxI = 1000
     for (nThreads <- List(1, 10)) { // test single & multi-threaded
       sc = new SparkContext("local[" + nThreads + "]", "test")
-      val acc: Accumulable[mutable.Set[Any], Any] = sc.accumulable(new mutable.HashSet[Any]())
+      val acc: Accumulator[Any, mutable.Set[Any]] = sc.accumulable(new mutable.HashSet[Any]())
       val groupedInts = (1 to (maxI/20)).map {x => (20 * (x - 1) to 20 * x).toSet}
       val d = sc.parallelize(groupedInts)
       d.foreach {
-        x => acc.localValue ++= x
+        x => acc.localValue
       }
       acc.value should be ( (0 to maxI).toSet)
       resetSparkContext()
@@ -157,7 +153,7 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
   test ("garbage collection") {
     // Create an accumulator and let it go out of scope to test that it's properly garbage collected
     sc = new SparkContext("local", "test")
-    var acc: Accumulable[mutable.Set[Any], Any] = sc.accumulable(new mutable.HashSet[Any]())
+    var acc: Accumulator[Any, mutable.Set[Any]] = sc.accumulable(new mutable.HashSet[Any]())
     val accId = acc.id
     val ref = WeakReference(acc)
 
@@ -169,14 +165,15 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
     System.gc()
     assert(ref.get.isEmpty)
 
-    Accumulators.remove(accId)
-    assert(!Accumulators.originals.get(accId).isDefined)
+    AccumulatorContext.remove(accId)
+    assert(!AccumulatorContext.originals.containsKey(accId))
   }
 
   test("get accum") {
     sc = new SparkContext("local", "test")
     // Don't register with SparkContext for cleanup
-    var acc = new Accumulable[Int, Int](0, IntAccumulatorParam, None, true)
+    var acc = new IntAccumulator(Some("a"))
+    AccumulatorContext.register(acc)
     val accId = acc.id
     val ref = WeakReference(acc)
     assert(ref.get.isDefined)
@@ -188,84 +185,27 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
 
     // Getting a garbage collected accum should throw error
     intercept[IllegalAccessError] {
-      Accumulators.get(accId)
+      AccumulatorContext.get(accId)
     }
 
     // Getting a normal accumulator. Note: this has to be separate because referencing an
     // accumulator above in an `assert` would keep it from being garbage collected.
-    val acc2 = new Accumulable[Long, Long](0L, LongAccumulatorParam, None, true)
-    assert(Accumulators.get(acc2.id) === Some(acc2))
+    val acc2 = new LongAccumulator(Some("b"))
+    AccumulatorContext.register(acc2)
+    assert(AccumulatorContext.get(acc2.id) === Some(acc2))
 
     // Getting an accumulator that does not exist should return None
-    assert(Accumulators.get(100000).isEmpty)
-  }
-
-  test("copy") {
-    val acc1 = new Accumulable[Long, Long](456L, LongAccumulatorParam, Some("x"), false)
-    val acc2 = acc1.copy()
-    assert(acc1.id === acc2.id)
-    assert(acc1.value === acc2.value)
-    assert(acc1.name === acc2.name)
-    assert(acc1.countFailedValues === acc2.countFailedValues)
-    assert(acc1 !== acc2)
-    // Modifying one does not affect the other
-    acc1.add(44L)
-    assert(acc1.value === 500L)
-    assert(acc2.value === 456L)
-    acc2.add(144L)
-    assert(acc1.value === 500L)
-    assert(acc2.value === 600L)
-  }
-
-  test("register multiple accums with same ID") {
-    val acc1 = new Accumulable[Int, Int](0, IntAccumulatorParam, None, true)
-    // `copy` will create a new Accumulable and register it.
-    val acc2 = acc1.copy()
-    assert(acc1 !== acc2)
-    assert(acc1.id === acc2.id)
-    // The second one does not override the first one
-    assert(Accumulators.originals.size === 1)
-    assert(Accumulators.get(acc1.id) === Some(acc1))
-  }
-
-  test("string accumulator param") {
-    val acc = new Accumulator("", StringAccumulatorParam, Some("darkness"))
-    assert(acc.value === "")
-    acc.setValue("feeds")
-    assert(acc.value === "feeds")
-    acc.add("your")
-    assert(acc.value === "your") // value is overwritten, not concatenated
-    acc += "soul"
-    assert(acc.value === "soul")
-    acc ++= "with"
-    assert(acc.value === "with")
-    acc.merge("kindness")
-    assert(acc.value === "kindness")
-  }
-
-  test("list accumulator param") {
-    val acc = new Accumulator(Seq.empty[Int], new ListAccumulatorParam[Int], Some("numbers"))
-    assert(acc.value === Seq.empty[Int])
-    acc.add(Seq(1, 2))
-    assert(acc.value === Seq(1, 2))
-    acc += Seq(3, 4)
-    assert(acc.value === Seq(1, 2, 3, 4))
-    acc ++= Seq(5, 6)
-    assert(acc.value === Seq(1, 2, 3, 4, 5, 6))
-    acc.merge(Seq(7, 8))
-    assert(acc.value === Seq(1, 2, 3, 4, 5, 6, 7, 8))
-    acc.setValue(Seq(9, 10))
-    assert(acc.value === Seq(9, 10))
+    assert(AccumulatorContext.get(100000).isEmpty)
   }
 
   test("value is reset on the executors") {
-    val acc1 = new Accumulator(0, IntAccumulatorParam, Some("thing"))
-    val acc2 = new Accumulator(0L, LongAccumulatorParam, Some("thing2"))
+    val acc1 = new IntAccumulator(None)
+    val acc2 = new LongAccumulator(None)
     val externalAccums = Seq(acc1, acc2)
     val taskMetrics = new TaskMetrics
     // Set some values; these should not be observed later on the "executors"
-    acc1.setValue(10)
-    acc2.setValue(20L)
+    acc1.add(10)
+    acc2.add(20L)
     taskMetrics.testAccum.get.setValue(30L)
     // Simulate the task being serialized and sent to the executors.
     val dummyTask = new DummyTask(taskMetrics, externalAccums)
@@ -278,8 +218,12 @@ class AccumulatorSuite extends SparkFunSuite with Matchers with LocalSparkContex
     val taskDeser = serInstance.deserialize[DummyTask](
       taskBytes, Thread.currentThread.getContextClassLoader)
     // Assert that executors see only zeros
-    taskDeser.externalAccums.foreach { a => assert(a.localValue == a.zero) }
-    taskDeser.metrics.internalAccums.foreach { a => assert(a.localValue == a.zero) }
+    taskDeser.externalAccums.foreach { a =>
+      assert(a.asInstanceOf[Accumulator[Any, Any]].isZero(a.localValue))
+    }
+    taskDeser.metrics.internalAccums.foreach { a =>
+      assert(a.asInstanceOf[Accumulator[Any, Any]].isZero(a.localValue))
+    }
   }
 
 }
@@ -340,7 +284,6 @@ private class SaveInfoListener extends SparkListener {
     if (jobCompletionCallback != null) {
       jobCompletionSem.acquire()
       if (exception != null) {
-        exception = null
         throw exception
       }
     }
@@ -384,6 +327,6 @@ private class SaveInfoListener extends SparkListener {
  */
 private[spark] class DummyTask(
     metrics: TaskMetrics,
-    val externalAccums: Seq[Accumulator[_]]) extends Task[Int](0, 0, 0, metrics) {
+    val externalAccums: Seq[Accumulator[_, _]]) extends Task[Int](0, 0, 0, metrics) {
   override def runTask(c: TaskContext): Int = 1
 }

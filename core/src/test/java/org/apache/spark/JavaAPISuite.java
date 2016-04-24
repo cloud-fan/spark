@@ -287,7 +287,7 @@ public class JavaAPISuite implements Serializable {
 
   @Test
   public void foreach() {
-    final Accumulator<Integer> accum = sc.accumulator(0);
+    final Accumulator<Integer, Integer> accum = sc.accumulator(0);
     JavaRDD<String> rdd = sc.parallelize(Arrays.asList("Hello", "World"));
     rdd.foreach(new VoidFunction<String>() {
       @Override
@@ -300,7 +300,7 @@ public class JavaAPISuite implements Serializable {
 
   @Test
   public void foreachPartition() {
-    final Accumulator<Integer> accum = sc.accumulator(0);
+    final Accumulator<Integer, Integer> accum = sc.accumulator(0);
     JavaRDD<String> rdd = sc.parallelize(Arrays.asList("Hello", "World"));
     rdd.foreachPartition(new VoidFunction<Iterator<String>>() {
       @Override
@@ -1381,7 +1381,7 @@ public class JavaAPISuite implements Serializable {
   public void accumulators() {
     JavaRDD<Integer> rdd = sc.parallelize(Arrays.asList(1, 2, 3, 4, 5));
 
-    final Accumulator<Integer> intAccum = sc.intAccumulator(10);
+    final Accumulator<Integer, Integer> intAccum = sc.intAccumulator(10);
     rdd.foreach(new VoidFunction<Integer>() {
       @Override
       public void call(Integer x) {
@@ -1390,7 +1390,7 @@ public class JavaAPISuite implements Serializable {
     });
     assertEquals((Integer) 25, intAccum.value());
 
-    final Accumulator<Double> doubleAccum = sc.doubleAccumulator(10.0);
+    final Accumulator<Double, Double> doubleAccum = sc.doubleAccumulator(10.0);
     rdd.foreach(new VoidFunction<Integer>() {
       @Override
       public void call(Integer x) {
@@ -1417,7 +1417,7 @@ public class JavaAPISuite implements Serializable {
       }
     };
 
-    final Accumulator<Float> floatAccum = sc.accumulator(10.0f, floatAccumulatorParam);
+    final Accumulator<Float, Float> floatAccum = sc.accumulator(10.0f, floatAccumulatorParam);
     rdd.foreach(new VoidFunction<Integer>() {
       @Override
       public void call(Integer x) {
@@ -1425,10 +1425,6 @@ public class JavaAPISuite implements Serializable {
       }
     });
     assertEquals((Float) 25.0f, floatAccum.value());
-
-    // Test the setValue method
-    floatAccum.setValue(5.0f);
-    assertEquals((Float) 5.0f, floatAccum.value());
   }
 
   @Test

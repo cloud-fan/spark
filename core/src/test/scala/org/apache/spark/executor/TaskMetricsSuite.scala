@@ -59,8 +59,8 @@ class TaskMetricsSuite extends SparkFunSuite {
     tm.incPeakExecutionMemory(8L)
     val block1 = (TestBlockId("a"), BlockStatus(MEMORY_ONLY, 1L, 2L))
     val block2 = (TestBlockId("b"), BlockStatus(MEMORY_ONLY, 3L, 4L))
-    tm.incUpdatedBlockStatuses(Seq(block1))
-    tm.incUpdatedBlockStatuses(Seq(block2))
+    tm.incUpdatedBlockStatuses(block1)
+    tm.incUpdatedBlockStatuses(block2)
     // assert new values exist
     assert(tm.executorDeserializeTime == 1L)
     assert(tm.executorRunTime == 2L)
@@ -195,10 +195,10 @@ class TaskMetricsSuite extends SparkFunSuite {
 
   test("additional accumulables") {
     val tm = new TaskMetrics
-    val acc1 = new Accumulator(0, IntAccumulatorParam, Some("a"))
-    val acc2 = new Accumulator(0, IntAccumulatorParam, Some("b"))
-    val acc3 = new Accumulator(0, IntAccumulatorParam, Some("c"))
-    val acc4 = new Accumulator(0, IntAccumulatorParam, Some("d"), countFailedValues = true)
+    val acc1 = new IntAccumulator(Some("a"))
+    val acc2 = new IntAccumulator(Some("b"))
+    val acc3 = new IntAccumulator(Some("c"))
+    val acc4 = new IntAccumulator(Some("d"), true)
     tm.registerAccumulator(acc1)
     tm.registerAccumulator(acc2)
     tm.registerAccumulator(acc3)
@@ -235,19 +235,20 @@ class TaskMetricsSuite extends SparkFunSuite {
     // updates from unregistered accumulators. In practice, all accumulators created
     // on the driver, internal or not, should be registered with `Accumulators` at some point.
     val param = IntAccumulatorParam
-    val registeredAccums = Seq(
-      new Accumulator(0, param, Some("a"), countFailedValues = true),
-      new Accumulator(0, param, Some("b"), countFailedValues = false))
-    val unregisteredAccums = Seq(
-      new Accumulator(0, param, Some("c"), countFailedValues = true),
-      new Accumulator(0, param, Some("d"), countFailedValues = false))
-    registeredAccums.foreach(Accumulators.register)
-    registeredAccums.foreach(a => assert(Accumulators.originals.contains(a.id)))
-    unregisteredAccums.foreach(a => Accumulators.remove(a.id))
-    unregisteredAccums.foreach(a => assert(!Accumulators.originals.contains(a.id)))
+    val acc1 = new IntAccumulator(Some("a"), true)
+    AccumulatorContext.register(acc1)
+    val acc2 = new IntAccumulator(Some("b"), false)
+    AccumulatorContext.register(acc2)
+    val acc3 = new IntAccumulator(Some("c"), true)
+    val acc4 = new IntAccumulator(Some("d"), false)
+
+    val registeredAccums = Seq(acc1, acc2)
+    val unregisteredAccums = Seq(acc3, acc4)
+    registeredAccums.foreach(a => assert(AccumulatorContext.originals.containsKey(a.id)))
+    unregisteredAccums.foreach(a => assert(!AccumulatorContext.originals.containsKey(a.id)))
     // set some values in these accums
-    registeredAccums.zipWithIndex.foreach { case (a, i) => a.setValue(i) }
-    unregisteredAccums.zipWithIndex.foreach { case (a, i) => a.setValue(i) }
+    registeredAccums.zipWithIndex.foreach { case (a, i) => a.add(i) }
+    unregisteredAccums.zipWithIndex.foreach { case (a, i) => a.add(i) }
     val registeredAccumInfos = registeredAccums.map(makeInfo)
     val unregisteredAccumInfos = unregisteredAccums.map(makeInfo)
     val accumUpdates2 = accumUpdates1 ++ registeredAccumInfos ++ unregisteredAccumInfos
@@ -277,8 +278,8 @@ private[spark] object TaskMetricsSuite extends Assertions {
   }
 
   /**
-   * Make an [[AccumulableInfo]] out of an [[Accumulable]] with the intent to use the
+   * Make an [[AccumulableInfo]] out of an [[Accumulator]] with the intent to use the
    * info as an accumulator update.
    */
-  def makeInfo(a: Accumulable[_, _]): AccumulableInfo = a.toInfo(Some(a.value), None)
+  def makeInfo(a: Accumulator[_, _]): AccumulableInfo = a.toInfo(Some(a.value), None)
 }

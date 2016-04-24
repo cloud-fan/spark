@@ -17,7 +17,7 @@
 
 package org.apache.spark.executor
 
-import org.apache.spark.{InternalAccumulator, LongAccumulator}
+import org.apache.spark.InternalAccumulator
 import org.apache.spark.annotation.DeveloperApi
 
 
@@ -39,18 +39,20 @@ object DataWriteMethod extends Enumeration with Serializable {
  */
 @DeveloperApi
 class OutputMetrics private[spark] () extends Serializable {
-  private[executor] val _bytesWritten = new LongAccumulator
-  private[executor] val _recordsWritten = new LongAccumulator
+  import InternalAccumulator.output._
+
+  private[executor] val _bytesWritten = new InternalLongAccumulator(BYTES_WRITTEN)
+  private[executor] val _recordsWritten = new InternalLongAccumulator(RECORDS_WRITTEN)
 
   /**
    * Total number of bytes written.
    */
-  def bytesWritten: Long = _bytesWritten.value
+  def bytesWritten: Long = _bytesWritten.localValue
 
   /**
    * Total number of records written.
    */
-  def recordsWritten: Long = _recordsWritten.value
+  def recordsWritten: Long = _recordsWritten.localValue
 
   private[spark] def setBytesWritten(v: Long): Unit = _bytesWritten.setValue(v)
   private[spark] def setRecordsWritten(v: Long): Unit = _recordsWritten.setValue(v)

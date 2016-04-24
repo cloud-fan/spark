@@ -123,15 +123,6 @@ case class ExceptionFailure(
     accumUpdates: Seq[AccumulableInfo] = Seq.empty[AccumulableInfo])
   extends TaskFailedReason {
 
-  @deprecated("use accumUpdates instead", "2.0.0")
-  val metrics: Option[TaskMetrics] = {
-    if (accumUpdates.nonEmpty) {
-      Try(TaskMetrics.fromAccumulatorUpdates(accumUpdates)).toOption
-    } else {
-      None
-    }
-  }
-
   /**
    * `preserveCause` is used to keep the exception itself so it is available to the
    * driver. This may be set to `false` in the event that the exception is not in fact

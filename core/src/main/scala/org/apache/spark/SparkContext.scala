@@ -1217,8 +1217,7 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
    * Create an [[org.apache.spark.Accumulator]] variable of a given type, which tasks can "add"
    * values to using the `+=` method. Only the driver can access the accumulator's `value`.
    */
-  def accumulator[T](initialValue: T)(implicit param: AccumulatorParam[T]): NewAccumulator[T, T] =
-  {
+  def accumulator[T](initialValue: T)(implicit param: AccumulatorParam[T]): Accumulator[T, T] = {
     val acc = new LegacyAccumulatorWrapper(initialValue, param)
     acc.register(this)
     acc
@@ -1230,36 +1229,36 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
    * driver can access the accumulator's `value`.
    */
   def accumulator[T](initialValue: T, name: String)(implicit param: AccumulatorParam[T])
-    : NewAccumulator[T, T] = {
-    val acc = new LegacyAccumulatorWrapper(initialValue, param)
-    acc.register(this, name = Some(name))
+    : Accumulator[T, T] = {
+    val acc = new LegacyAccumulatorWrapper(initialValue, param, Some(name))
+    acc.register(this)
     acc
   }
 
   /**
-   * Create an [[org.apache.spark.Accumulable]] shared variable, to which tasks can add values
+   * Create an [[org.apache.spark.Accumulator]] shared variable, to which tasks can add values
    * with `+=`. Only the driver can access the accumuable's `value`.
    * @tparam R accumulator result type
    * @tparam T type that can be added to the accumulator
    */
   def accumulable[R, T](initialValue: R)(implicit param: AccumulableParam[R, T])
-    : NewAccumulator[T, R] = {
+    : Accumulator[T, R] = {
     val acc = new LegacyAccumulatorWrapper(initialValue, param)
     acc.register(this)
     acc
   }
 
   /**
-   * Create an [[org.apache.spark.Accumulable]] shared variable, with a name for display in the
+   * Create an [[org.apache.spark.Accumulator]] shared variable, with a name for display in the
    * Spark UI. Tasks can add values to the accumuable using the `+=` operator. Only the driver can
    * access the accumuable's `value`.
    * @tparam R accumulator result type
    * @tparam T type that can be added to the accumulator
    */
   def accumulable[R, T](initialValue: R, name: String)(implicit param: AccumulableParam[R, T])
-    : NewAccumulator[T, R] = {
-    val acc = new LegacyAccumulatorWrapper(initialValue, param)
-    acc.register(this, name = Some(name))
+    : Accumulator[T, R] = {
+    val acc = new LegacyAccumulatorWrapper(initialValue, param, Some(name))
+    acc.register(this)
     acc
   }
 
@@ -1270,7 +1269,7 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
    * standard mutable collections. So you can use this with mutable Map, Set, etc.
    */
   def accumulableCollection[R <% Growable[T] with TraversableOnce[T] with Serializable: ClassTag, T]
-      (initialValue: R): NewAccumulator[T, R] = {
+      (initialValue: R): Accumulator[T, R] = {
     val param = new GrowableAccumulableParam[R, T]
     val acc = new LegacyAccumulatorWrapper(initialValue, param)
     acc.register(this)
@@ -1284,8 +1283,8 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
   }
 
   def longAccumulator(name: String): LongAccumulator = {
-    val acc = new LongAccumulator
-    acc.register(this, name = Some(name))
+    val acc = new LongAccumulator(Some(name))
+    acc.register(this)
     acc
   }
 
@@ -1296,9 +1295,13 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
   }
 
   def doubleAccumulator(name: String): DoubleAccumulator = {
-    val acc = new DoubleAccumulator
-    acc.register(this, name = Some(name))
+    val acc = new DoubleAccumulator(Some(name))
+    acc.register(this)
     acc
+  }
+
+  def registerAccumulator(acc: Accumulator[_, _]): Unit = {
+    acc.register(this)
   }
 
   /**

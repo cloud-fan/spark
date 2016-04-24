@@ -88,10 +88,9 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   }
 
   /**
-   * Return a SumSQLMetrics according to the name.
+   * Return a SQLMetrics according to the name.
    */
-  private[sql] def longMetric(name: String): SumSQLMetrics =
-    metrics(name).asInstanceOf[SumSQLMetrics]
+  private[sql] def longMetric(name: String): SQLMetrics = metrics(name)
 
   // TODO: Move to `DistributedPlan`
   /** Specifies how data is partitioned across different nodes in the cluster. */

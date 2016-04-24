@@ -24,44 +24,35 @@ import org.apache.spark.scheduler.AccumulableInfo
 import org.apache.spark.util.Utils
 
 
-private[sql] abstract class SQLMetrics extends NewAccumulator[Long, Long] {
+private[sql] class SQLMetrics(
+    _name: String,
+    metricType: String,
+    initValue: Long = 0L) extends Accumulator[Long, Long](Some(_name), true) {
   @transient private[this] var _sum = 0L
+
+  override def isZero(v: Long): Boolean = _sum == initValue
 
   override def add(v: Long): Unit = _sum += v
 
   override def +=(v: Long): Unit = _sum += v
 
-  override def merge(other: NewAccumulator[Long, Long]): Unit = other match {
-    case m: SQLMetrics => _sum += m.value
-    case _ => throw new UnsupportedOperationException(
-      s"Cannot merge ${this.getClass.getName} with ${other.getClass.getName}")
-  }
+  override def merge(v: Long): Unit = _sum += v
 
-  override def value: Long = _sum
+  override def localValue: Long = _sum
+
+  override def initialize(): Unit = {
+    // This is a workaround for SPARK-11013.
+    // We may use -1 as initial value of the accumulator, if the accumulator is valid, we will
+    // update it at the end of task and the value will be at least 0. Then we can filter out the -1
+    // values before calculate max, min, etc.
+    _sum = initValue
+  }
 
   def reset(): Unit = _sum = 0L
 
-  def metricType: String
-
   // Provide special identifier as metadata so we can tell that this is a `SQLMetric` later
   private[spark] override def toInfo(update: Option[Any], value: Option[Any]): AccumulableInfo = {
-    assertRegistered()
-    new AccumulableInfo(id, metadata.name, update, value, true, metadata.countFailedValues,
-      Some(SQLMetrics.ACCUM_IDENTIFIER))
-  }
-}
-
-private[sql] class SumSQLMetrics extends SQLMetrics {
-  override def metricType: String = "sum"
-}
-
-private[sql] class StatisticalSQLMetrics(val metricType: String) extends SQLMetrics {
-  override def initialize(): Unit = {
-    // This is a workaround for SPARK-11013.
-    // We use -1 as initial value of the accumulator, if the accumulator is valid, we will update
-    // it at the end of task and the value will be at least 0. Then we can filter out the -1 values
-    // before calculate max, min, etc.
-    add(-1L)
+    new AccumulableInfo(id, name, update, value, true, true, Some(SQLMetrics.ACCUM_IDENTIFIER))
   }
 }
 
@@ -71,9 +62,13 @@ private[sql] object SQLMetrics {
   // Identifier for distinguishing SQL metrics from other accumulators
   private[sql] val ACCUM_IDENTIFIER = "sql"
 
+  private[sql] val SUM_METRIC = "sum"
+  private[sql] val SIZE_METRIC = "size"
+  private[sql] val TIMING_METRIC = "timing"
+
   def createSumMetric(sc: SparkContext, name: String): SQLMetrics = {
-    val acc = new SumSQLMetrics
-    acc.register(sc, name = Some(name))
+    val acc = new SQLMetrics(name, SUM_METRIC)
+    acc.register(sc)
     acc
   }
 
@@ -85,8 +80,8 @@ private[sql] object SQLMetrics {
     // The final result of this metric in physical operator UI may looks like:
     // data size total (min, med, max):
     // 100GB (100MB, 1GB, 10GB)
-    val acc = new StatisticalSQLMetrics("size")
-    acc.register(sc, name = Some(s"$name total (min, med, max)"))
+    val acc = new SQLMetrics(s"$name total (min, med, max)", SIZE_METRIC, -1)
+    acc.register(sc)
     acc
   }
 
@@ -94,8 +89,8 @@ private[sql] object SQLMetrics {
     // The final result of this metric in physical operator UI may looks like:
     // duration(min, med, max):
     // 5s (800ms, 1s, 2s)
-    val acc = new StatisticalSQLMetrics("time")
-    acc.register(sc, name = Some(s"$name total (min, med, max)"))
+    val acc = new SQLMetrics(s"$name total (min, med, max)", TIMING_METRIC, -1)
+    acc.register(sc)
     acc
   }
 
@@ -104,12 +99,12 @@ private[sql] object SQLMetrics {
    * and represent it in string for a SQL physical operator.
    */
   def stringValue(metricsType: String, values: Seq[Long]): String = {
-    if (metricsType == "sum") {
+    if (metricsType == SUM_METRIC) {
       NumberFormat.getInstance().format(values.sum)
     } else {
-      val strFormat: Long => String = if (metricsType == "size") {
+      val strFormat: Long => String = if (metricsType == SIZE_METRIC) {
         Utils.bytesToString
-      } else if (metricsType == "time") {
+      } else if (metricsType == TIMING_METRIC) {
         Utils.msDurationToString
       } else {
         throw new IllegalStateException("unexpected metrics type: " + metricsType)

@@ -17,6 +17,7 @@
 
 package org.apache.spark.api.java
 
+import java.{lang => jl}
 import java.io.Closeable
 import java.util
 import java.util.{Map => JMap}
@@ -530,8 +531,9 @@ class JavaSparkContext(val sc: SparkContext)
    * Create an [[org.apache.spark.Accumulator]] integer variable, which tasks can "add" values
    * to using the `add` method. Only the master can access the accumulator's `value`.
    */
-  def intAccumulator(initialValue: Int): Accumulator[java.lang.Integer] =
-    sc.accumulator(initialValue)(IntAccumulatorParam).asInstanceOf[Accumulator[java.lang.Integer]]
+  def intAccumulator(initialValue: Int): Accumulator[jl.Integer, jl.Integer] =
+    sc.accumulator(initialValue)(IntAccumulatorParam)
+      .asInstanceOf[Accumulator[jl.Integer, jl.Integer]]
 
   /**
    * Create an [[org.apache.spark.Accumulator]] integer variable, which tasks can "add" values
@@ -539,16 +541,17 @@ class JavaSparkContext(val sc: SparkContext)
    *
    * This version supports naming the accumulator for display in Spark's web UI.
    */
-  def intAccumulator(initialValue: Int, name: String): Accumulator[java.lang.Integer] =
+  def intAccumulator(initialValue: Int, name: String): Accumulator[jl.Integer, jl.Integer] =
     sc.accumulator(initialValue, name)(IntAccumulatorParam)
-      .asInstanceOf[Accumulator[java.lang.Integer]]
+      .asInstanceOf[Accumulator[jl.Integer, jl.Integer]]
 
   /**
    * Create an [[org.apache.spark.Accumulator]] double variable, which tasks can "add" values
    * to using the `add` method. Only the master can access the accumulator's `value`.
    */
-  def doubleAccumulator(initialValue: Double): Accumulator[java.lang.Double] =
-    sc.accumulator(initialValue)(DoubleAccumulatorParam).asInstanceOf[Accumulator[java.lang.Double]]
+  def doubleAccumulator(initialValue: Double): Accumulator[jl.Double, jl.Double] =
+    sc.accumulator(initialValue)(DoubleAccumulatorParam)
+      .asInstanceOf[Accumulator[jl.Double, jl.Double]]
 
   /**
    * Create an [[org.apache.spark.Accumulator]] double variable, which tasks can "add" values
@@ -556,15 +559,16 @@ class JavaSparkContext(val sc: SparkContext)
    *
    * This version supports naming the accumulator for display in Spark's web UI.
    */
-  def doubleAccumulator(initialValue: Double, name: String): Accumulator[java.lang.Double] =
+  def doubleAccumulator(initialValue: Double, name: String): Accumulator[jl.Double, jl.Double] =
     sc.accumulator(initialValue, name)(DoubleAccumulatorParam)
-      .asInstanceOf[Accumulator[java.lang.Double]]
+      .asInstanceOf[Accumulator[jl.Double, jl.Double]]
 
   /**
    * Create an [[org.apache.spark.Accumulator]] integer variable, which tasks can "add" values
    * to using the `add` method. Only the master can access the accumulator's `value`.
    */
-  def accumulator(initialValue: Int): Accumulator[java.lang.Integer] = intAccumulator(initialValue)
+  def accumulator(initialValue: Int): Accumulator[jl.Integer, jl.Integer] =
+    intAccumulator(initialValue)
 
   /**
    * Create an [[org.apache.spark.Accumulator]] integer variable, which tasks can "add" values
@@ -572,14 +576,14 @@ class JavaSparkContext(val sc: SparkContext)
    *
    * This version supports naming the accumulator for display in Spark's web UI.
    */
-  def accumulator(initialValue: Int, name: String): Accumulator[java.lang.Integer] =
+  def accumulator(initialValue: Int, name: String): Accumulator[jl.Integer, jl.Integer] =
     intAccumulator(initialValue, name)
 
   /**
    * Create an [[org.apache.spark.Accumulator]] double variable, which tasks can "add" values
    * to using the `add` method. Only the master can access the accumulator's `value`.
    */
-  def accumulator(initialValue: Double): Accumulator[java.lang.Double] =
+  def accumulator(initialValue: Double): Accumulator[jl.Double, jl.Double] =
     doubleAccumulator(initialValue)
 
 
@@ -589,14 +593,14 @@ class JavaSparkContext(val sc: SparkContext)
    *
    * This version supports naming the accumulator for display in Spark's web UI.
    */
-  def accumulator(initialValue: Double, name: String): Accumulator[java.lang.Double] =
+  def accumulator(initialValue: Double, name: String): Accumulator[jl.Double, jl.Double] =
     doubleAccumulator(initialValue, name)
 
   /**
    * Create an [[org.apache.spark.Accumulator]] variable of a given type, which tasks can "add"
    * values to using the `add` method. Only the master can access the accumulator's `value`.
    */
-  def accumulator[T](initialValue: T, accumulatorParam: AccumulatorParam[T]): Accumulator[T] =
+  def accumulator[T](initialValue: T, accumulatorParam: AccumulatorParam[T]): Accumulator[T, T] =
     sc.accumulator(initialValue)(accumulatorParam)
 
   /**
@@ -606,25 +610,37 @@ class JavaSparkContext(val sc: SparkContext)
    * This version supports naming the accumulator for display in Spark's web UI.
    */
   def accumulator[T](initialValue: T, name: String, accumulatorParam: AccumulatorParam[T])
-      : Accumulator[T] =
+      : Accumulator[T, T] =
     sc.accumulator(initialValue, name)(accumulatorParam)
 
   /**
-   * Create an [[org.apache.spark.Accumulable]] shared variable of the given type, to which tasks
+   * Create an [[org.apache.spark.Accumulator]] shared variable of the given type, to which tasks
    * can "add" values with `add`. Only the master can access the accumuable's `value`.
    */
-  def accumulable[T, R](initialValue: T, param: AccumulableParam[T, R]): Accumulable[T, R] =
+  def accumulable[T, R](initialValue: R, param: AccumulableParam[R, T]): Accumulator[T, R] =
     sc.accumulable(initialValue)(param)
 
   /**
-   * Create an [[org.apache.spark.Accumulable]] shared variable of the given type, to which tasks
+   * Create an [[org.apache.spark.Accumulator]] shared variable of the given type, to which tasks
    * can "add" values with `add`. Only the master can access the accumuable's `value`.
    *
    * This version supports naming the accumulator for display in Spark's web UI.
    */
-  def accumulable[T, R](initialValue: T, name: String, param: AccumulableParam[T, R])
-      : Accumulable[T, R] =
+  def accumulable[T, R](initialValue: R, name: String, param: AccumulableParam[R, T])
+      : Accumulator[T, R] =
     sc.accumulable(initialValue, name)(param)
+
+  def longAccumulator(): LongAccumulator = sc.longAccumulator
+
+  def longAccumulator(name: String): LongAccumulator = sc.longAccumulator(name)
+
+  def doubleAccumulator(): DoubleAccumulator = sc.doubleAccumulator
+
+  def doubleAccumulator(name: String): DoubleAccumulator = sc.doubleAccumulator(name)
+
+  def registerAccumulator(acc: Accumulator[_, _]): Unit = {
+    acc.register(sc)
+  }
 
   /**
    * Broadcast a read-only variable to the cluster, returning a

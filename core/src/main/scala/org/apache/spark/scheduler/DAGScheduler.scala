@@ -1093,14 +1093,14 @@ class DAGScheduler(
         val id = ainfo.id
         val partialValue = ainfo.update.get
         // Find the corresponding accumulator on the driver and update it
-        val acc: Accumulable[Any, Any] = Accumulators.get(id) match {
-          case Some(accum) => accum.asInstanceOf[Accumulable[Any, Any]]
+        val acc: Accumulator[Any, Any] = AccumulatorContext.get(id) match {
+          case Some(accum) => accum.asInstanceOf[Accumulator[Any, Any]]
           case None =>
             throw new SparkException(s"attempted to access non-existent accumulator $id")
         }
         acc ++= partialValue
         // To avoid UI cruft, ignore cases where value wasn't updated
-        if (acc.name.isDefined && partialValue != acc.zero) {
+        if (acc.name.isDefined && !acc.isZero(partialValue)) {
           stage.latestInfo.accumulables(id) = acc.toInfo(None, Some(acc.value))
           event.taskInfo.accumulables += acc.toInfo(Some(partialValue), Some(acc.value))
         }
