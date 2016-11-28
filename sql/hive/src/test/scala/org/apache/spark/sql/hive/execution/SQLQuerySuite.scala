@@ -40,6 +40,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.CalendarInterval
+import org.apache.spark.util.Utils
 
 case class Nested1(f1: Nested2)
 case class Nested2(f2: Nested3)
@@ -2014,5 +2015,120 @@ class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
   def testCommandAvailable(command: String): Boolean = {
     val attempt = Try(Process(command).run(ProcessLogger(_ => ())).exitValue())
     attempt.isSuccess && attempt.get == 0
+  }
+
+  test("partition behaviors") {
+    // test partitioned data source table
+    sql("CREATE TABLE part_tbl(i int, j int) USING json PARTITIONED BY (j)")
+    sql("DESC part_tbl").show()
+    assert(spark.table("part_tbl").count() == 0)
+
+    sql("INSERT INTO TABLE part_tbl SELECT * FROM VALUES (1, 1), (2, 2) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"), Row(1, 1) :: Row(2, 2) :: Nil)
+
+    // for data source table, INSERT OVERWRITE without PARTITION will overwrite the entire table
+    sql("INSERT OVERWRITE TABLE part_tbl SELECT * FROM VALUES (3, 3), (20, 2) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"), Row(3, 3) :: Row(20, 2) :: Nil)
+
+    // append to the table
+    sql("INSERT INTO TABLE part_tbl SELECT * FROM VALUES (0, 3), (0, 4) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"), Row(3, 3) :: Row(20, 2) :: Row(0, 3) :: Row(0, 4) :: Nil)
+
+    // overwrite one partition
+    sql("INSERT OVERWRITE TABLE part_tbl PARTITION (j=3) SELECT 10")
+    checkAnswer(spark.table("part_tbl"), Row(10, 3) :: Row(20, 2) :: Row(0, 4) :: Nil)
+
+    // append to one partition
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=3) SELECT 20")
+    checkAnswer(spark.table("part_tbl"), Row(10, 3) :: Row(20, 2) :: Row(0, 4) :: Row(20, 3) :: Nil)
+
+    // select one partition
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 3"), Row(10, 3) :: Row(20, 3) :: Nil)
+
+    // ADD PARTITION
+    sql("ALTER TABLE part_tbl ADD PARTITION (j=5)")
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=5) SELECT 1")
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 5"), Row(1, 5))
+
+    val tempDir = Utils.createTempDir()
+    tempDir.deleteOnExit()
+    // ADD PARTITION with custom location
+    sql(s"ALTER TABLE part_tbl ADD PARTITION (j=6) LOCATION '${tempDir.getAbsolutePath}'")
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=6) SELECT 1")
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 6"), Row(1, 6))
+
+    // DROP PARTITION
+    sql(
+      """
+        |ALTER TABLE part_tbl DROP
+        |PARTITION(j=2), PARTITION(j=3), PARTITION(j=4), PARTITION(j=5), PARTITION(j=6)
+      """.stripMargin)
+    assert(spark.table("part_tbl").count() == 0)
+
+    sql("DROP TABLE part_tbl")
+
+    // create partitioned data source table using DataFrameWriter.saveAsTable
+    Seq(1 -> 1, 2 -> 2).toDF("i", "j").write.partitionBy("j").saveAsTable("part_tbl")
+    sql("DESC part_tbl").show()
+    checkAnswer(spark.table("part_tbl"), Row(1, 1) :: Row(2, 2) :: Nil)
+
+    // overwrite partitioned data source table using DataFrameWriter.saveAsTable
+    Seq(3 -> 3, 4 -> 4).toDF("i", "j").write.mode("overwrite").saveAsTable("part_tbl")
+    checkAnswer(spark.table("part_tbl"), Row(3, 3) :: Row(4, 4) :: Nil)
+
+    // append partitioned data source table using DataFrameWriter.saveAsTable
+    Seq(0 -> 3, 0 -> 4).toDF("i", "j").write.mode("append").saveAsTable("part_tbl")
+    checkAnswer(spark.table("part_tbl"), Row(3, 3) :: Row(4, 4) :: Row(0, 3) :: Row(0, 4) :: Nil)
+
+    sql("DROP TABLE part_tbl")
+
+    // test partitioned hive table
+    sql("SET hive.exec.dynamic.partition.mode=nonstrict")
+    sql("CREATE TABLE part_tbl(i int) PARTITIONED BY (j int)")
+    sql("DESC part_tbl").show()
+    assert(spark.table("part_tbl").count() == 0)
+
+    sql("INSERT INTO TABLE part_tbl SELECT * FROM VALUES (1, 1), (2, 2) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"), Row(1, 1) :: Row(2, 2) :: Nil)
+
+    // for hive table, INSERT OVERWRITE will only overwrite the affected partitions
+    sql("INSERT OVERWRITE TABLE part_tbl SELECT * FROM VALUES (3, 3), (20, 2) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"), Row(1, 1) :: Row(3, 3) :: Row(20, 2) :: Nil)
+
+    // append to the table
+    sql("INSERT INTO TABLE part_tbl SELECT * FROM VALUES (0, 3), (0, 4) AS t(i, j)")
+    checkAnswer(spark.table("part_tbl"),
+      Row(1, 1) :: Row(3, 3) :: Row(20, 2) :: Row(0, 3) :: Row(0, 4) :: Nil)
+
+    // overwrite one partition
+    sql("INSERT OVERWRITE TABLE part_tbl PARTITION (j=3) SELECT 10")
+    checkAnswer(spark.table("part_tbl"), Row(1, 1) :: Row(10, 3) :: Row(20, 2) :: Row(0, 4) :: Nil)
+
+    // append to one partition
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=3) SELECT 20")
+    checkAnswer(spark.table("part_tbl"),
+      Row(1, 1) :: Row(10, 3) :: Row(20, 2) :: Row(0, 4) :: Row(20, 3) :: Nil)
+
+    // select one partition
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 3"), Row(10, 3) :: Row(20, 3) :: Nil)
+
+    // ADD PARTITION
+    sql("ALTER TABLE part_tbl ADD PARTITION (j=5)")
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=5) SELECT 1")
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 5"), Row(1, 5))
+
+    // ADD PARTITION with custom location
+    sql(s"ALTER TABLE part_tbl ADD PARTITION (j=6) LOCATION '${tempDir.getAbsolutePath}'")
+    sql("INSERT INTO TABLE part_tbl PARTITION (j=6) SELECT 1")
+    checkAnswer(sql("SELECT * FROM part_tbl WHERE j = 6"), Row(1, 6))
+
+    // DROP PARTITION
+    sql(
+      """
+        |ALTER TABLE part_tbl DROP
+        |PARTITION(j=1), PARTITION(j=2), PARTITION(j=3),
+        |PARTITION(j=4), PARTITION(j=5), PARTITION(j=6)
+      """.stripMargin)
+    assert(spark.table("part_tbl").count() == 0)
   }
 }
