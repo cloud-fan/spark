@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.execution.vectorized.ColumnVector
+import org.apache.spark.sql.execution.vectorized.{ColumnVector, OffHeapColumnVector}
 import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.Benchmark
@@ -179,6 +179,7 @@ object ColumnarBatchBenchmark {
     // Access by directly getting the buffer backing the column.
     val columnOffheapDirect = { i: Int =>
       val col = ColumnVector.allocate(count, IntegerType, MemoryMode.OFF_HEAP)
+        .asInstanceOf[OffHeapColumnVector]
       var sum = 0L
       for (n <- 0L until iters) {
         var addr = col.valuesNativeAddress()
@@ -242,26 +243,6 @@ object ColumnarBatchBenchmark {
       Platform.freeMemory(buffer)
     }
 
-    // Adding values by appending, instead of putting.
-    val onHeapAppend = { i: Int =>
-      val col = ColumnVector.allocate(count, IntegerType, MemoryMode.ON_HEAP)
-      var sum = 0L
-      for (n <- 0L until iters) {
-        var i = 0
-        while (i < count) {
-          col.appendInt(i)
-          i += 1
-        }
-        i = 0
-        while (i < count) {
-          sum += col.getInt(i)
-          i += 1
-        }
-        col.reset()
-      }
-      col.close
-    }
-
     /*
     Intel(R) Core(TM) i7-4870HQ CPU @ 2.50GHz
     Int Read/Write:              Avg Time(ms)    Avg Rate(M/s)  Relative Rate
@@ -276,7 +257,6 @@ object ColumnarBatchBenchmark {
     Column(off heap direct)             237.6          1379.12         1.05 X
     UnsafeRow (on heap)                 414.6           790.35         0.60 X
     UnsafeRow (off heap)                487.2           672.58         0.51 X
-    Column On Heap Append               530.1           618.14         0.59 X
     */
     val benchmark = new Benchmark("Int Read/Write", count * iters)
     benchmark.addCase("Java Array")(javaArray)
@@ -289,7 +269,6 @@ object ColumnarBatchBenchmark {
     benchmark.addCase("Column(off heap direct)")(columnOffheapDirect)
     benchmark.addCase("UnsafeRow (on heap)")(unsafeRowOnheap)
     benchmark.addCase("UnsafeRow (off heap)")(unsafeRowOffheap)
-    benchmark.addCase("Column On Heap Append")(onHeapAppend)
     benchmark.run()
   }
 

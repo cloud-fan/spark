@@ -35,47 +35,22 @@ import org.apache.spark.unsafe.types.CalendarInterval
 
 class ColumnarBatchSuite extends SparkFunSuite {
   test("Null Apis") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val reference = mutable.ArrayBuffer.empty[Boolean]
 
       val column = ColumnVector.allocate(1024, IntegerType, memMode)
       var idx = 0
-      assert(column.anyNullsSet() == false)
-      assert(column.numNulls() == 0)
-
-      column.appendNotNull()
-      reference += false
-      assert(column.anyNullsSet() == false)
-      assert(column.numNulls() == 0)
-
-      column.appendNotNulls(3)
-      (1 to 3).foreach(_ => reference += false)
-      assert(column.anyNullsSet() == false)
-      assert(column.numNulls() == 0)
-
-      column.appendNull()
-      reference += true
-      assert(column.anyNullsSet())
-      assert(column.numNulls() == 1)
-
-      column.appendNulls(3)
-      (1 to 3).foreach(_ => reference += true)
-      assert(column.anyNullsSet())
-      assert(column.numNulls() == 4)
-
-      idx = column.elementsAppended
-
       column.putNotNull(idx)
       reference += false
       idx += 1
-      assert(column.anyNullsSet())
-      assert(column.numNulls() == 4)
+      assert(!column.anyNullsSet())
+      assert(column.numNulls() == 0)
 
       column.putNull(idx)
       reference += true
       idx += 1
       assert(column.anyNullsSet())
-      assert(column.numNulls() == 5)
+      assert(column.numNulls() == 1)
 
       column.putNulls(idx, 3)
       reference += true
@@ -83,7 +58,7 @@ class ColumnarBatchSuite extends SparkFunSuite {
       reference += true
       idx += 3
       assert(column.anyNullsSet())
-      assert(column.numNulls() == 8)
+      assert(column.numNulls() == 4)
 
       column.putNotNulls(idx, 4)
       reference += false
@@ -92,44 +67,23 @@ class ColumnarBatchSuite extends SparkFunSuite {
       reference += false
       idx += 4
       assert(column.anyNullsSet())
-      assert(column.numNulls() == 8)
+      assert(column.numNulls() == 4)
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.isNullAt(v._2))
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.nullsNativeAddress()
-          assert(v._1 == (Platform.getByte(null, addr + v._2) == 1), "index=" + v._2)
-        }
       }
       column.close
-    }}
+    }
   }
 
   test("Byte Apis") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val reference = mutable.ArrayBuffer.empty[Byte]
 
       val column = ColumnVector.allocate(1024, ByteType, memMode)
+      var idx = 0
 
-      var values = (10 :: 20 :: 30 :: 40 :: 50 :: Nil).map(_.toByte).toArray
-      column.appendBytes(2, values, 0)
-      reference += 10.toByte
-      reference += 20.toByte
-
-      column.appendBytes(3, values, 2)
-      reference += 30.toByte
-      reference += 40.toByte
-      reference += 50.toByte
-
-      column.appendBytes(6, 60.toByte)
-      (1 to 6).foreach(_ => reference += 60.toByte)
-
-      column.appendByte(70.toByte)
-      reference += 70.toByte
-
-      var idx = column.elementsAppended
-
-      values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).map(_.toByte).toArray
+      val values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).map(_.toByte).toArray
       column.putBytes(idx, 2, values, 0)
       reference += 1
       reference += 2
@@ -153,41 +107,21 @@ class ColumnarBatchSuite extends SparkFunSuite {
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getByte(v._2), "MemoryMode" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getByte(null, addr + v._2))
-        }
       }
-    }}
+      column.close
+    }
   }
 
   test("Short Apis") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val seed = System.currentTimeMillis()
       val random = new Random(seed)
       val reference = mutable.ArrayBuffer.empty[Short]
 
       val column = ColumnVector.allocate(1024, ShortType, memMode)
+      var idx = 0
 
-      var values = (10 :: 20 :: 30 :: 40 :: 50 :: Nil).map(_.toShort).toArray
-      column.appendShorts(2, values, 0)
-      reference += 10.toShort
-      reference += 20.toShort
-
-      column.appendShorts(3, values, 2)
-      reference += 30.toShort
-      reference += 40.toShort
-      reference += 50.toShort
-
-      column.appendShorts(6, 60.toShort)
-      (1 to 6).foreach(_ => reference += 60.toShort)
-
-      column.appendShort(70.toShort)
-      reference += 70.toShort
-
-      var idx = column.elementsAppended
-
-      values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).map(_.toShort).toArray
+      val values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).map(_.toShort).toArray
       column.putShorts(idx, 2, values, 0)
       reference += 1
       reference += 2
@@ -231,43 +165,21 @@ class ColumnarBatchSuite extends SparkFunSuite {
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getShort(v._2), "Seed = " + seed + " Mem Mode=" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getShort(null, addr + 2 * v._2))
-        }
       }
-
       column.close
-    }}
+    }
   }
 
   test("Int Apis") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val seed = System.currentTimeMillis()
       val random = new Random(seed)
       val reference = mutable.ArrayBuffer.empty[Int]
 
       val column = ColumnVector.allocate(1024, IntegerType, memMode)
+      var idx = 0
 
-      var values = (10 :: 20 :: 30 :: 40 :: 50 :: Nil).toArray
-      column.appendInts(2, values, 0)
-      reference += 10
-      reference += 20
-
-      column.appendInts(3, values, 2)
-      reference += 30
-      reference += 40
-      reference += 50
-
-      column.appendInts(6, 60)
-      (1 to 6).foreach(_ => reference += 60)
-
-      column.appendInt(70)
-      reference += 70
-
-      var idx = column.elementsAppended
-
-      values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).toArray
+      val values = (1 :: 2 :: 3 :: 4 :: 5 :: Nil).toArray
       column.putInts(idx, 2, values, 0)
       reference += 1
       reference += 2
@@ -317,42 +229,21 @@ class ColumnarBatchSuite extends SparkFunSuite {
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getInt(v._2), "Seed = " + seed + " Mem Mode=" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getInt(null, addr + 4 * v._2))
-        }
       }
       column.close
-    }}
+    }
   }
 
   test("Long Apis") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val seed = System.currentTimeMillis()
       val random = new Random(seed)
       val reference = mutable.ArrayBuffer.empty[Long]
 
       val column = ColumnVector.allocate(1024, LongType, memMode)
+      var idx = 0
 
-      var values = (10L :: 20L :: 30L :: 40L :: 50L :: Nil).toArray
-      column.appendLongs(2, values, 0)
-      reference += 10L
-      reference += 20L
-
-      column.appendLongs(3, values, 2)
-      reference += 30L
-      reference += 40L
-      reference += 50L
-
-      column.appendLongs(6, 60L)
-      (1 to 6).foreach(_ => reference += 60L)
-
-      column.appendLong(70L)
-      reference += 70L
-
-      var idx = column.elementsAppended
-
-      values = (1L :: 2L :: 3L :: 4L :: 5L :: Nil).toArray
+      val values = (1L :: 2L :: 3L :: 4L :: 5L :: Nil).toArray
       column.putLongs(idx, 2, values, 0)
       reference += 1
       reference += 2
@@ -405,41 +296,20 @@ class ColumnarBatchSuite extends SparkFunSuite {
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getLong(v._2), "idx=" + v._2 +
             " Seed = " + seed + " MemMode=" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getLong(null, addr + 8 * v._2))
-        }
       }
-    }}
+    }
   }
 
   test("Float APIs") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val seed = System.currentTimeMillis()
       val random = new Random(seed)
       val reference = mutable.ArrayBuffer.empty[Float]
 
       val column = ColumnVector.allocate(1024, FloatType, memMode)
+      var idx = 0
 
-      var values = (.1f :: .2f :: .3f :: .4f :: .5f :: Nil).toArray
-      column.appendFloats(2, values, 0)
-      reference += .1f
-      reference += .2f
-
-      column.appendFloats(3, values, 2)
-      reference += .3f
-      reference += .4f
-      reference += .5f
-
-      column.appendFloats(6, .6f)
-      (1 to 6).foreach(_ => reference += .6f)
-
-      column.appendFloat(.7f)
-      reference += .7f
-
-      var idx = column.elementsAppended
-
-      values = (1.0f :: 2.0f :: 3.0f :: 4.0f :: 5.0f :: Nil).toArray
+      val values = (1.0f :: 2.0f :: 3.0f :: 4.0f :: 5.0f :: Nil).toArray
       column.putFloats(idx, 2, values, 0)
       reference += 1.0f
       reference += 2.0f
@@ -495,42 +365,21 @@ class ColumnarBatchSuite extends SparkFunSuite {
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getFloat(v._2), "Seed = " + seed + " MemMode=" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getFloat(null, addr + 4 * v._2))
-        }
       }
       column.close
-    }}
+    }
   }
 
   test("Double APIs") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val seed = System.currentTimeMillis()
       val random = new Random(seed)
       val reference = mutable.ArrayBuffer.empty[Double]
 
       val column = ColumnVector.allocate(1024, DoubleType, memMode)
+      var idx = 0
 
-      var values = (.1 :: .2 :: .3 :: .4 :: .5 :: Nil).toArray
-      column.appendDoubles(2, values, 0)
-      reference += .1
-      reference += .2
-
-      column.appendDoubles(3, values, 2)
-      reference += .3
-      reference += .4
-      reference += .5
-
-      column.appendDoubles(6, .6)
-      (1 to 6).foreach(_ => reference += .6)
-
-      column.appendDouble(.7)
-      reference += .7
-
-      var idx = column.elementsAppended
-
-      values = (1.0 :: 2.0 :: 3.0 :: 4.0 :: 5.0 :: Nil).toArray
+      val values = (1.0 :: 2.0 :: 3.0 :: 4.0 :: 5.0 :: Nil).toArray
       column.putDoubles(idx, 2, values, 0)
       reference += 1.0
       reference += 2.0
@@ -586,73 +435,55 @@ class ColumnarBatchSuite extends SparkFunSuite {
 
       reference.zipWithIndex.foreach { v =>
         assert(v._1 == column.getDouble(v._2), "Seed = " + seed + " MemMode=" + memMode)
-        if (memMode == MemoryMode.OFF_HEAP) {
-          val addr = column.valuesNativeAddress()
-          assert(v._1 == Platform.getDouble(null, addr + 8 * v._2))
-        }
       }
       column.close
-    }}
+    }
   }
 
   test("String APIs") {
-    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode => {
+    (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val reference = mutable.ArrayBuffer.empty[String]
 
-      val column = ColumnVector.allocate(6, BinaryType, memMode)
-      assert(column.arrayData().elementsAppended == 0)
+      val column = ColumnVector.allocate(6, StringType, memMode)
+      var idx = 0
 
       val str = "string"
-      column.appendByteArray(str.getBytes(StandardCharsets.UTF_8),
-        0, str.getBytes(StandardCharsets.UTF_8).length)
+      column.putByteArray(idx, str.getBytes(StandardCharsets.UTF_8))
       reference += str
-      assert(column.arrayData().elementsAppended == 6)
-
-      var idx = column.elementsAppended
+      idx += 1
+      assert(column.elementsWritten == 6)
 
       val values = ("Hello" :: "abc" :: Nil).toArray
-      column.putByteArray(idx, values(0).getBytes(StandardCharsets.UTF_8),
-        0, values(0).getBytes(StandardCharsets.UTF_8).length)
-      reference += values(0)
-      idx += 1
-      assert(column.arrayData().elementsAppended == 11)
-
-      column.putByteArray(idx, values(1).getBytes(StandardCharsets.UTF_8),
-        0, values(1).getBytes(StandardCharsets.UTF_8).length)
-      reference += values(1)
-      idx += 1
-      assert(column.arrayData().elementsAppended == 14)
+      column.putByteArray(idx, values(0).getBytes(StandardCharsets.UTF_8))
+      column.putByteArray(idx + 1, values(1).getBytes(StandardCharsets.UTF_8))
+      reference ++= values
+      idx += 2
+      assert(column.elementsWritten == 14)
 
       // Just put llo
-      val offset = column.putByteArray(idx, values(0).getBytes(StandardCharsets.UTF_8),
-        2, values(0).getBytes(StandardCharsets.UTF_8).length - 2)
+      column.putByteArray(idx, values(0).getBytes(StandardCharsets.UTF_8), 2, 3)
       reference += "llo"
       idx += 1
-      assert(column.arrayData().elementsAppended == 17)
+      assert(column.elementsWritten == 17)
 
       // Put the same "ll" at offset. This should not allocate more memory in the column.
-      column.putArrayOffsetAndSize(idx, offset, 2)
+      column.putArrayOffsetAndSize(idx, column.elementsWritten - 3, 2)
       reference += "ll"
       idx += 1
-      assert(column.arrayData().elementsAppended == 17)
+      assert(column.elementsWritten == 17)
 
       // Put a long string
       val s = "abcdefghijklmnopqrstuvwxyz"
       column.putByteArray(idx, (s + s).getBytes(StandardCharsets.UTF_8))
       reference += (s + s)
       idx += 1
-      assert(column.arrayData().elementsAppended == 17 + (s + s).length)
+      assert(column.elementsWritten == 17 + (s + s).length)
 
       reference.zipWithIndex.foreach { v =>
-        val offsetAndLength = column.getLong(v._2)
-        assert(v._1.length == offsetAndLength.toInt, "MemoryMode=" + memMode)
-        assert(v._1 == column.getUTF8String(v._2).toString,
-          "MemoryMode" + memMode)
+        assert(v._1 == column.getUTF8String(v._2).toString, "MemoryMode" + memMode)
       }
-
       column.reset()
-      assert(column.arrayData().elementsAppended == 0)
-    }}
+    }
   }
 
   test("Int Array") {
@@ -1064,15 +895,9 @@ class ColumnarBatchSuite extends SparkFunSuite {
     (MemoryMode.ON_HEAP :: MemoryMode.OFF_HEAP :: Nil).foreach { memMode =>
       val column = ColumnVector.allocate(1, ByteType, memMode)
       column.MAX_CAPACITY = 15
-      column.appendBytes(5, 0.toByte)
-      // Successfully allocate twice the requested capacity
-      assert(column.capacity == 10)
-      column.appendBytes(10, 0.toByte)
-      // Allocated capacity doesn't exceed MAX_CAPACITY
-      assert(column.capacity == 15)
       val ex = intercept[RuntimeException] {
         // Over-allocating beyond MAX_CAPACITY throws an exception
-        column.appendBytes(10, 0.toByte)
+        column.reserve(16)
       }
       assert(ex.getMessage.contains(s"Cannot reserve additional contiguous bytes in the " +
         s"vectorized reader"))

@@ -56,16 +56,17 @@ public final class OnHeapColumnVector extends ColumnVector {
   }
 
   @Override
-  public long valuesNativeAddress() {
-    throw new RuntimeException("Cannot get native address for on heap column");
-  }
-  @Override
-  public long nullsNativeAddress() {
-    throw new RuntimeException("Cannot get native address for on heap column");
+  public void close() {
   }
 
   @Override
-  public void close() {
+  public Object binaryBaseObject() {
+    return byteData;
+  }
+
+  @Override
+  public long binaryBaseOffset() {
+    return Platform.BYTE_ARRAY_OFFSET;
   }
 
   //
@@ -149,6 +150,12 @@ public final class OnHeapColumnVector extends ColumnVector {
   @Override
   public void putBytes(int rowId, int count, byte[] src, int srcIndex) {
     System.arraycopy(src, srcIndex, byteData, rowId, count);
+  }
+
+  @Override
+  public void putBytes(int rowId, Object base, long offset, int length) {
+    Platform.copyMemory(
+      base, offset, byteData, Platform.BYTE_ARRAY_OFFSET + rowId, length);
   }
 
   @Override
@@ -362,12 +369,6 @@ public final class OnHeapColumnVector extends ColumnVector {
     } else {
       return dictionary.decodeToDouble(dictionaryIds.getDictId(rowId));
     }
-  }
-
-  @Override
-  public void loadBytes(ColumnVector.Array array) {
-    array.byteArray = byteData;
-    array.byteArrayOffset = array.offset;
   }
 
   // Spilt this function out since it is the slow path.

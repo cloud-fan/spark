@@ -48,14 +48,18 @@ public final class OffHeapColumnVector extends ColumnVector {
     reset();
   }
 
-  @Override
   public long valuesNativeAddress() {
     return data;
   }
 
   @Override
-  public long nullsNativeAddress() {
-    return nulls;
+  public Object binaryBaseObject() {
+    return null;
+  }
+
+  @Override
+  public long binaryBaseOffset() {
+    return data;
   }
 
   @Override
@@ -146,6 +150,11 @@ public final class OffHeapColumnVector extends ColumnVector {
   @Override
   public void putBytes(int rowId, int count, byte[] src, int srcIndex) {
     Platform.copyMemory(src, Platform.BYTE_ARRAY_OFFSET + srcIndex, null, data + rowId, count);
+  }
+
+  @Override
+  public void putBytes(int rowId, Object base, long offset, int length) {
+    Platform.copyMemory(base, offset, null, data + rowId, length);
   }
 
   @Override
@@ -385,15 +394,6 @@ public final class OffHeapColumnVector extends ColumnVector {
     } else {
       return dictionary.decodeToDouble(dictionaryIds.getDictId(rowId));
     }
-  }
-
-  @Override
-  public void loadBytes(ColumnVector.Array array) {
-    if (array.tmpByteArray.length < array.length) array.tmpByteArray = new byte[array.length];
-    Platform.copyMemory(
-        null, data + array.offset, array.tmpByteArray, Platform.BYTE_ARRAY_OFFSET, array.length);
-    array.byteArray = array.tmpByteArray;
-    array.byteArrayOffset = 0;
   }
 
   // Split out the slow path.

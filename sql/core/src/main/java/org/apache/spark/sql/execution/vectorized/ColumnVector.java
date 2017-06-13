@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.util.ArrayData;
 import org.apache.spark.sql.catalyst.util.MapData;
 import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
+import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
 
@@ -80,14 +81,6 @@ public abstract class ColumnVector implements AutoCloseable {
     public final ColumnVector data;
     public int length;
     public int offset;
-
-    // Populate if binary data is required for the Array. This is stored here as an optimization
-    // for string data.
-    public byte[] byteArray;
-    public int byteArrayOffset;
-
-    // Reused staging buffer, used for loading from offheap.
-    protected byte[] tmpByteArray = new byte[1];
 
     protected Array(ColumnVector data) {
       this.data = data;
@@ -270,7 +263,7 @@ public abstract class ColumnVector implements AutoCloseable {
       }
     }
     numNulls = 0;
-    elementsAppended = 0;
+    elementsWritten = 0;
     if (anyNullsSet) {
       putNotNulls(0, capacity);
       anyNullsSet = false;
@@ -318,6 +311,17 @@ public abstract class ColumnVector implements AutoCloseable {
   protected abstract void reserveInternal(int capacity);
 
   /**
+   * Returns the base object of the data of this column vector if it's a byte column vector, can be
+   * null if the data is off-heap.
+   */
+  public abstract Object binaryBaseObject();
+
+  /**
+   * Returns the base offset of the data of this column vector if it's a byte column vector.
+   */
+  public abstract long binaryBaseOffset();
+
+  /**
    * Returns the number of nulls in this column.
    */
   public final int numNulls() { return numNulls; }
@@ -327,13 +331,6 @@ public abstract class ColumnVector implements AutoCloseable {
    * as an optimization to prevent setting nulls.
    */
   public final boolean anyNullsSet() { return anyNullsSet; }
-
-  /**
-   * Returns the off heap ptr for the arrays backing the NULLs and values buffer. Only valid
-   * to call for off heap columns.
-   */
-  public abstract long nullsNativeAddress();
-  public abstract long valuesNativeAddress();
 
   /**
    * Sets the value at rowId to null/not null.
@@ -381,6 +378,11 @@ public abstract class ColumnVector implements AutoCloseable {
    * Sets values from [rowId, rowId + count) to [src + srcIndex, src + srcIndex + count)
    */
   public abstract void putBytes(int rowId, int count, byte[] src, int srcIndex);
+
+  /**
+   * Sets values from [rowId, rowId + length) to [base + offset, base + offset + length);
+   */
+  public abstract void putBytes(int rowId, Object base, long offset, int length);
 
   /**
    * Returns the value for rowId.
@@ -519,15 +521,6 @@ public abstract class ColumnVector implements AutoCloseable {
   public abstract double getDouble(int rowId);
 
   /**
-   * After writing array elements to the child column vector, call this method to set the offset and
-   * size of the written array.
-   */
-  public void putArrayOffsetAndSize(int rowId, int offset, int size) {
-    long offsetAndSize = (((long) offset) << 32) | size;
-    putLong(rowId, offsetAndSize);
-  }
-
-  /**
    * Returns a utility object to get structs.
    */
   public ColumnarBatch.Row getStruct(int rowId) {
@@ -545,6 +538,15 @@ public abstract class ColumnVector implements AutoCloseable {
   }
 
   /**
+   * After writing array elements to the child column vector, call this method to set the offset and
+   * size of the written array.
+   */
+  public void putArrayOffsetAndSize(int rowId, int offset, int size) {
+    long offsetAndSize = (((long) offset) << 32) | size;
+    putLong(rowId, offsetAndSize);
+  }
+
+  /**
    * Returns the array at rowid.
    */
   public final Array getArray(int rowId) {
@@ -554,31 +556,19 @@ public abstract class ColumnVector implements AutoCloseable {
     return resultArray;
   }
 
-  /**
-   * Loads the data into array.byteArray.
-   */
-  public abstract void loadBytes(Array array);
-
-  /**
-   * Sets the value at rowId to `value`.
-   */
-  public int putByteArray(int rowId, byte[] value, int offset, int length) {
-    int result = arrayData().appendBytes(length, value, offset);
-    putArrayOffsetAndSize(rowId, result, length);
-    return result;
+  public final void putBinary(int rowId, Object base, long offset, int numBytes) {
+    arrayData().reserve(elementsWritten + numBytes);
+    arrayData().putBytes(elementsWritten, base, offset, numBytes);
+    putArrayOffsetAndSize(rowId, elementsWritten, numBytes);
+    elementsWritten += numBytes;
   }
 
-  public final int putByteArray(int rowId, byte[] value) {
-    return putByteArray(rowId, value, 0, value.length);
+  public final void putByteArray(int rowId, byte[] value) {
+    putBinary(rowId, value, Platform.BYTE_ARRAY_OFFSET, value.length);
   }
 
-  /**
-   * Returns the value for rowId.
-   */
-  private Array getByteArray(int rowId) {
-    Array array = getArray(rowId);
-    array.data.loadBytes(array);
-    return array;
+  public final void putByteArray(int rowId, byte[] value, int offset, int length) {
+    putBinary(rowId, value, Platform.BYTE_ARRAY_OFFSET + offset, length);
   }
 
   /**
@@ -622,8 +612,9 @@ public abstract class ColumnVector implements AutoCloseable {
    */
   public final UTF8String getUTF8String(int rowId) {
     if (dictionary == null) {
-      ColumnVector.Array a = getByteArray(rowId);
-      return UTF8String.fromBytes(a.byteArray, a.byteArrayOffset, a.length);
+      ColumnVector.Array a = getArray(rowId);
+      return UTF8String.fromAddress(
+        a.data.binaryBaseObject(), a.data.binaryBaseOffset() + a.offset, a.length);
     } else {
       byte[] bytes = dictionary.decodeToBinary(dictionaryIds.getDictId(rowId));
       return UTF8String.fromBytes(bytes);
@@ -635,231 +626,14 @@ public abstract class ColumnVector implements AutoCloseable {
    */
   public final byte[] getBinary(int rowId) {
     if (dictionary == null) {
-      ColumnVector.Array array = getByteArray(rowId);
-      byte[] bytes = new byte[array.length];
-      System.arraycopy(array.byteArray, array.byteArrayOffset, bytes, 0, bytes.length);
+      ColumnVector.Array a = getArray(rowId);
+      byte[] bytes = new byte[a.length];
+      Platform.copyMemory(a.data.binaryBaseObject(), a.data.binaryBaseOffset() + a.offset,
+        bytes, Platform.BYTE_ARRAY_OFFSET, a.length);
       return bytes;
     } else {
       return dictionary.decodeToBinary(dictionaryIds.getDictId(rowId));
     }
-  }
-
-  /**
-   * Append APIs. These APIs all behave similarly and will append data to the current vector.  It
-   * is not valid to mix the put and append APIs. The append APIs are slower and should only be
-   * used if the sizes are not known up front.
-   * In all these cases, the return value is the rowId for the first appended element.
-   */
-  public final int appendNull() {
-    assert (!(dataType() instanceof StructType)); // Use appendStruct()
-    reserve(elementsAppended + 1);
-    putNull(elementsAppended);
-    return elementsAppended++;
-  }
-
-  public final int appendNotNull() {
-    reserve(elementsAppended + 1);
-    putNotNull(elementsAppended);
-    return elementsAppended++;
-  }
-
-  public final int appendNulls(int count) {
-    assert (!(dataType() instanceof StructType));
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putNulls(elementsAppended, count);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendNotNulls(int count) {
-    assert (!(dataType() instanceof StructType));
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putNotNulls(elementsAppended, count);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendBoolean(boolean v) {
-    reserve(elementsAppended + 1);
-    putBoolean(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendBooleans(int count, boolean v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putBooleans(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendByte(byte v) {
-    reserve(elementsAppended + 1);
-    putByte(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendBytes(int count, byte v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putBytes(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendBytes(int length, byte[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putBytes(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendShort(short v) {
-    reserve(elementsAppended + 1);
-    putShort(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendShorts(int count, short v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putShorts(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendShorts(int length, short[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putShorts(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendInt(int v) {
-    reserve(elementsAppended + 1);
-    putInt(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendInts(int count, int v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putInts(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendInts(int length, int[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putInts(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendLong(long v) {
-    reserve(elementsAppended + 1);
-    putLong(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendLongs(int count, long v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putLongs(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendLongs(int length, long[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putLongs(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendFloat(float v) {
-    reserve(elementsAppended + 1);
-    putFloat(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendFloats(int count, float v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putFloats(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendFloats(int length, float[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putFloats(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendDouble(double v) {
-    reserve(elementsAppended + 1);
-    putDouble(elementsAppended, v);
-    return elementsAppended++;
-  }
-
-  public final int appendDoubles(int count, double v) {
-    reserve(elementsAppended + count);
-    int result = elementsAppended;
-    putDoubles(elementsAppended, count, v);
-    elementsAppended += count;
-    return result;
-  }
-
-  public final int appendDoubles(int length, double[] src, int offset) {
-    reserve(elementsAppended + length);
-    int result = elementsAppended;
-    putDoubles(elementsAppended, length, src, offset);
-    elementsAppended += length;
-    return result;
-  }
-
-  public final int appendByteArray(byte[] value, int offset, int length) {
-    int copiedOffset = arrayData().appendBytes(length, value, offset);
-    reserve(elementsAppended + 1);
-    putArrayOffsetAndSize(elementsAppended, copiedOffset, length);
-    return elementsAppended++;
-  }
-
-  public final int appendArray(int length) {
-    reserve(elementsAppended + 1);
-    putArrayOffsetAndSize(elementsAppended, arrayData().elementsAppended, length);
-    return elementsAppended++;
-  }
-
-  /**
-   * Appends a NULL struct. This *has* to be used for structs instead of appendNull() as this
-   * recursively appends a NULL to its children.
-   * We don't have this logic as the general appendNull implementation to optimize the more
-   * common non-struct case.
-   */
-  public final int appendStruct(boolean isNull) {
-    if (isNull) {
-      appendNull();
-      for (ColumnVector c: childColumns) {
-        if (c.type instanceof StructType) {
-          c.appendStruct(true);
-        } else {
-          c.appendNull();
-        }
-      }
-    } else {
-      appendNotNull();
-    }
-    return elementsAppended;
   }
 
   /**
@@ -871,11 +645,6 @@ public abstract class ColumnVector implements AutoCloseable {
    * Returns the ordinal's child data column.
    */
   public final ColumnVector getChildColumn(int ordinal) { return childColumns[ordinal]; }
-
-  /**
-   * Returns the elements appended.
-   */
-  public final int getElementsAppended() { return elementsAppended; }
 
   /**
    * Returns true if this column is an array.
@@ -926,9 +695,9 @@ public abstract class ColumnVector implements AutoCloseable {
   protected static final int DEFAULT_ARRAY_LENGTH = 4;
 
   /**
-   * Current write cursor (row index) when appending data.
+   * Tracks how many elements have been written, only valid for array column vector.
    */
-  protected int elementsAppended;
+  protected int elementsWritten;
 
   /**
    * If this is a nested type (array or struct), the column for the child data.

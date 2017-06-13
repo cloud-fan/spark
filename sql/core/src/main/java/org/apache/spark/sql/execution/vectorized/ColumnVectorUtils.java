@@ -14,19 +14,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.spark.sql.execution.vectorized;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
-import java.sql.Date;
 import java.util.Iterator;
-import java.util.List;
 
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.catalyst.util.DateTimeUtils;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
@@ -78,7 +74,7 @@ public class ColumnVectorUtils {
           final BigInteger integer = d.toJavaBigDecimal().unscaledValue();
           byte[] bytes = integer.toByteArray();
           for (int i = 0; i < capacity; i++) {
-            col.putByteArray(i, bytes, 0, bytes.length);
+            col.putByteArray(i, bytes);
           }
         }
       } else if (t instanceof CalendarIntervalType) {
@@ -115,99 +111,198 @@ public class ColumnVectorUtils {
     }
   }
 
-  private static void appendValue(ColumnVector dst, DataType t, Object o) {
-    if (o == null) {
-      if (t instanceof CalendarIntervalType) {
-        dst.appendStruct(true);
-      } else {
-        dst.appendNull();
-      }
-    } else {
-      if (t == DataTypes.BooleanType) {
-        dst.appendBoolean(((Boolean)o).booleanValue());
-      } else if (t == DataTypes.ByteType) {
-        dst.appendByte(((Byte) o).byteValue());
-      } else if (t == DataTypes.ShortType) {
-        dst.appendShort(((Short)o).shortValue());
-      } else if (t == DataTypes.IntegerType) {
-        dst.appendInt(((Integer)o).intValue());
-      } else if (t == DataTypes.LongType) {
-        dst.appendLong(((Long)o).longValue());
-      } else if (t == DataTypes.FloatType) {
-        dst.appendFloat(((Float)o).floatValue());
-      } else if (t == DataTypes.DoubleType) {
-        dst.appendDouble(((Double)o).doubleValue());
-      } else if (t == DataTypes.StringType) {
-        byte[] b =((String)o).getBytes(StandardCharsets.UTF_8);
-        dst.appendByteArray(b, 0, b.length);
-      } else if (t instanceof DecimalType) {
-        DecimalType dt = (DecimalType) t;
-        Decimal d = Decimal.apply((BigDecimal) o, dt.precision(), dt.scale());
-        if (dt.precision() <= Decimal.MAX_INT_DIGITS()) {
-          dst.appendInt((int) d.toUnscaledLong());
-        } else if (dt.precision() <= Decimal.MAX_LONG_DIGITS()) {
-          dst.appendLong(d.toUnscaledLong());
-        } else {
-          final BigInteger integer = d.toJavaBigDecimal().unscaledValue();
-          byte[] bytes = integer.toByteArray();
-          dst.appendByteArray(bytes, 0, bytes.length);
-        }
-      } else if (t instanceof CalendarIntervalType) {
-        CalendarInterval c = (CalendarInterval)o;
-        dst.appendStruct(false);
-        dst.getChildColumn(0).appendInt(c.months);
-        dst.getChildColumn(1).appendLong(c.microseconds);
-      } else if (t instanceof DateType) {
-        dst.appendInt(DateTimeUtils.fromJavaDate((Date)o));
-      } else {
-        throw new UnsupportedOperationException("Type " + t);
-      }
-    }
-  }
-
-  private static void appendValue(ColumnVector dst, DataType t, Row src, int fieldIdx) {
-    if (t instanceof ArrayType) {
-      ArrayType at = (ArrayType)t;
-      if (src.isNullAt(fieldIdx)) {
-        dst.appendNull();
-      } else {
-        List<Object> values = src.getList(fieldIdx);
-        dst.appendArray(values.size());
-        for (Object o : values) {
-          appendValue(dst.arrayData(), at.elementType(), o);
-        }
-      }
-    } else if (t instanceof StructType) {
-      StructType st = (StructType)t;
-      if (src.isNullAt(fieldIdx)) {
-        dst.appendStruct(true);
-      } else {
-        dst.appendStruct(false);
-        Row c = src.getStruct(fieldIdx);
-        for (int i = 0; i < st.fields().length; i++) {
-          appendValue(dst.getChildColumn(i), st.fields()[i].dataType(), c, i);
-        }
-      }
-    } else {
-      appendValue(dst, t, src.get(fieldIdx));
-    }
-  }
-
   /**
    * Converts an iterator of rows into a single ColumnBatch.
    */
   public static ColumnarBatch toBatch(
       StructType schema, MemoryMode memMode, Iterator<Row> row) {
     ColumnarBatch batch = ColumnarBatch.allocate(schema, memMode);
-    int n = 0;
+    RowWriter writer = (RowWriter) ColumnVectorWriter.create(schema);
+    int index = 0;
     while (row.hasNext()) {
       Row r = row.next();
-      for (int i = 0; i < schema.fields().length; i++) {
-        appendValue(batch.column(i), schema.fields()[i].dataType(), r, i);
-      }
-      n++;
+      writer.nextRow(r);
+      writer.write(batch, index);
+      index++;
     }
-    batch.setNumRows(n);
+    batch.setNumRows(index);
     return batch;
+  }
+}
+
+// TODO: generalize and publish it.
+interface ColumnVectorWriter {
+  void write(ColumnVector vector, int index);
+
+  static ColumnVectorWriter create(DataType dt) {
+    if (dt instanceof ArrayType) {
+      return new SeqWriter(((ArrayType) dt).elementType());
+    } else if (dt instanceof StructType) {
+      return new RowWriter((StructType) dt);
+    } else {
+      return new SimpleWriter(dt);
+    }
+  }
+}
+
+class RowWriter implements ColumnVectorWriter {
+  private ColumnVectorWriter[] childWriters;
+
+  private Row row = null;
+  private int rowCount = 0;
+
+  public RowWriter(StructType schema) {
+    childWriters = new ColumnVectorWriter[schema.size()];
+    for (int i = 0; i < schema.size(); i++) {
+      childWriters[i] = ColumnVectorWriter.create(schema.apply(i).dataType());
+    }
+  }
+
+  public void nextRow(Row row) {
+    this.row = row;
+  }
+
+  @Override
+  public void write(ColumnVector vector, int index) {
+    if (row == null) {
+      vector.putNull(index);
+      for (int i = 0; i < childWriters.length; i++) {
+        vector.getChildColumn(i).reserve(rowCount + 1);
+        vector.childColumns[i].putNull(rowCount);
+      }
+      rowCount++;
+    } else {
+      for (int i = 0; i < childWriters.length; i++) {
+        if (childWriters[i] instanceof RowWriter) {
+          ((RowWriter) childWriters[i]).nextRow(row.getStruct(i));
+        } else if (childWriters[i] instanceof SeqWriter) {
+          ((SeqWriter) childWriters[i]).nextSeq(row.<Object>getSeq(i));
+        } else {
+          ((SimpleWriter) childWriters[i]).nextValue(row.get(i));
+        }
+        vector.getChildColumn(i).reserve(rowCount + 1);
+        childWriters[i].write(vector.getChildColumn(i), rowCount);
+      }
+      rowCount++;
+    }
+  }
+
+  public void write(ColumnarBatch batch, int index) {
+    if (row == null) {
+      for (int i = 0; i < childWriters.length; i++) {
+        batch.column(i).reserve(rowCount + 1);
+        batch.column(i).putNull(rowCount);
+      }
+      rowCount++;
+    } else {
+      for (int i = 0; i < childWriters.length; i++) {
+        if (childWriters[i] instanceof RowWriter) {
+          ((RowWriter) childWriters[i]).nextRow(row.getStruct(i));
+        } else if (childWriters[i] instanceof SeqWriter) {
+          ((SeqWriter) childWriters[i]).nextSeq(row.<Object>getSeq(i));
+        } else {
+          ((SimpleWriter) childWriters[i]).nextValue(row.get(i));
+        }
+        batch.column(i).reserve(rowCount + 1);
+        childWriters[i].write(batch.column(i), rowCount);
+      }
+      rowCount++;
+    }
+  }
+}
+
+class SeqWriter implements ColumnVectorWriter {
+  private ColumnVectorWriter elementWriter;
+
+  scala.collection.Seq<Object> seq = null;
+
+  public SeqWriter(DataType et) {
+    elementWriter = ColumnVectorWriter.create(et);
+  }
+
+  public void nextSeq(scala.collection.Seq<Object> seq) {
+    this.seq = seq;
+  }
+
+  @Override
+  public void write(ColumnVector vector, int index) {
+    if (seq == null) {
+      vector.putNull(index);
+    } else {
+      vector.arrayData().reserve(vector.elementsWritten + seq.size());
+      if (elementWriter instanceof RowWriter) {
+        RowWriter writer = (RowWriter) elementWriter;
+        for (int i = 0; i < seq.size(); i++) {
+          writer.nextRow((Row) seq.apply(i));
+          writer.write(vector.arrayData(), i + vector.elementsWritten);
+        }
+      } else if (elementWriter instanceof SeqWriter) {
+        SeqWriter writer = (SeqWriter) elementWriter;
+        for (int i = 0; i < seq.size(); i++) {
+          writer.nextSeq((scala.collection.Seq<Object>) seq.apply(i));
+          writer.write(vector.arrayData(), i + vector.elementsWritten);
+        }
+      } else {
+        SimpleWriter writer = (SimpleWriter) elementWriter;
+        for (int i = 0; i < seq.size(); i++) {
+          writer.nextValue(seq.apply(i));
+          writer.write(vector.arrayData(), i + vector.elementsWritten);
+        }
+      }
+      vector.putArrayOffsetAndSize(index, vector.elementsWritten, seq.size());
+      vector.elementsWritten += seq.size();
+    }
+  }
+}
+
+class SimpleWriter implements ColumnVectorWriter {
+  private Object value;
+  private DataType dt;
+
+  public SimpleWriter(DataType dt) {
+    this.dt = dt;
+  }
+
+  public void nextValue(Object value) {
+    this.value = value;
+  }
+
+  @Override
+  public void write(ColumnVector vector, int index) {
+    if (value == null) {
+      vector.putNull(index);
+    } else {
+      if (dt == DataTypes.BooleanType) {
+        vector.putBoolean(index, (Boolean) value);
+      } else if (dt == DataTypes.ByteType) {
+        vector.putByte(index, (Byte) value);
+      } else if (dt == DataTypes.ShortType) {
+        vector.putShort(index, (Short) value);
+      } else if (dt == DataTypes.IntegerType) {
+        vector.putInt(index, (Integer) value);
+      } else if (dt == DataTypes.LongType) {
+        vector.putLong(index, (Long) value);
+      } else if (dt == DataTypes.FloatType) {
+        vector.putFloat(index, (Float) value);
+      } else if (dt == DataTypes.DoubleType) {
+        vector.putDouble(index, (Double) value);
+      } else if (dt instanceof DecimalType) {
+        int precision = ((DecimalType) dt).precision();
+        vector.putDecimal(index, Decimal.apply((java.math.BigDecimal) value), precision);
+      } else if (dt == DataTypes.BinaryType) {
+        vector.putByteArray(index, (byte[]) value);
+      } else if (dt == DataTypes.StringType) {
+        UTF8String str = UTF8String.fromString((String) value);
+        vector.putBinary(index, str.getBaseObject(), str.getBaseOffset(), str.numBytes());
+      } else if (dt == DataTypes.CalendarIntervalType) {
+        CalendarInterval c = (CalendarInterval) value;
+        vector.getChildColumn(0).reserve(index + 1);
+        vector.getChildColumn(0).putInt(index, c.months);
+        vector.getChildColumn(1).reserve(index + 1);
+        vector.getChildColumn(1).putLong(index, c.microseconds);
+      } else {
+        throw new IllegalStateException(dt.toString() + " is not primitive type.");
+      }
+    }
   }
 }
