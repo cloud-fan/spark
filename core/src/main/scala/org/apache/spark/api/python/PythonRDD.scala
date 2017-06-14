@@ -399,7 +399,7 @@ private class PairwiseRDD(prev: RDD[Array[Byte]]) extends RDD[(Long, Array[Byte]
   val asJavaPairRDD : JavaPairRDD[Long, Array[Byte]] = JavaPairRDD.fromRDD(this)
 }
 
-private object SpecialLengths {
+object SpecialLengths {
   val END_OF_DATA_SECTION = -1
   val PYTHON_EXCEPTION_THROWN = -2
   val TIMING_DATA = -3

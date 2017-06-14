@@ -30,8 +30,10 @@ from pyspark.broadcast import Broadcast, _broadcastRegistry
 from pyspark.taskcontext import TaskContext
 from pyspark.files import SparkFiles
 from pyspark.serializers import write_with_length, write_int, read_long, \
-    write_long, read_int, SpecialLengths, UTF8Deserializer, PickleSerializer, BatchedSerializer
+    write_long, read_int, SpecialLengths, UTF8Deserializer, PickleSerializer, \
+    BatchedSerializer, VectorizedSerializer
 from pyspark import shuffle
+from pyspark.sql.types import toArrowSchema
 
 pickleSer = PickleSerializer()
 utf8_deserializer = UTF8Deserializer()
@@ -95,7 +97,7 @@ def read_udfs(pickleSer, infile):
         args = ["a[%d]" % o for o in arg_offsets]
         call_udf.append("f%d(%s)" % (i, ", ".join(args)))
     # Create function like this:
-    #   lambda a: (f0(a0), f1(a1, a2), f2(a3))
+    #   lambda a: (f0(a[0]), f1(a[1], a[2]), f2(a[3]))
     # In the special case of a single UDF this will return a single result rather
     # than a tuple of results; this is the format that the JVM side expects.
     mapper_str = "lambda a: (%s)" % (", ".join(call_udf))
@@ -105,6 +107,45 @@ def read_udfs(pickleSer, infile):
     ser = BatchedSerializer(PickleSerializer(), 100)
     # profiling is not supported for UDF
     return func, None, ser, ser
+
+
+def read_udfs_vectorized(pickleSer, infile):
+    num_udfs = read_int(infile)
+    udfs = {}
+    call_udf = []
+    types = []
+    for i in range(num_udfs):
+        arg_offsets, udf, return_type = read_single_udf_with_type(pickleSer, infile)
+        types.append(return_type)
+        udfs['f%d' % i] = udf
+        args = ["a[%d]" % o for o in arg_offsets]
+        call_udf.append("f%d(%s)" % (i, ", ".join(args)))
+    # Create function like this:
+    #   lambda a: (f0(a[0]), f1(a[1], a[2]), f2(a[3]))
+    # In the special case of a single UDF this will return a single result rather
+    # than a tuple of results; this is the format that the JVM side expects.
+    mapper_str = "lambda a: (%s)" % (", ".join(call_udf))
+    mapper = eval(mapper_str, udfs)
+
+    func = lambda _, it: map(mapper, it)
+    ser = VectorizedSerializer()
+    ser.schema = toArrowSchema(types)
+    # profiling is not supported for UDF
+    return func, None, ser, ser
+
+
+def read_single_udf_with_type(pickleSer, infile):
+    num_arg = read_int(infile)
+    arg_offsets = [read_int(infile) for i in range(num_arg)]
+    row_func = None
+    for i in range(read_int(infile)):
+        f, return_type = read_command(pickleSer, infile)
+        if row_func is None:
+            row_func = f
+        else:
+            row_func = chain(row_func, f)
+    # the last returnType will be the return type of UDF
+    return arg_offsets, wrap_udf(row_func, return_type), return_type
 
 
 def main(infile, outfile):
@@ -159,11 +200,14 @@ def main(infile, outfile):
                 _broadcastRegistry.pop(bid)
 
         _accumulatorRegistry.clear()
-        is_sql_udf = read_int(infile)
-        if is_sql_udf:
+        mode = read_int(infile)
+        if mode == 2:
+            func, profiler, deserializer, serializer = read_udfs_vectorized(pickleSer, infile)
+        elif mode == 1:
             func, profiler, deserializer, serializer = read_udfs(pickleSer, infile)
         else:
             func, profiler, deserializer, serializer = read_command(pickleSer, infile)
+
 
         init_time = time.time()
 

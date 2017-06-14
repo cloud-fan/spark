@@ -28,8 +28,8 @@ import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.holders.NullableVarBinaryHolder;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
-
 import org.apache.arrow.vector.types.pojo.FieldType;
+
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.util.ArrayData;
 import org.apache.spark.sql.types.*;
@@ -37,7 +37,7 @@ import org.apache.spark.unsafe.types.UTF8String;
 
 public class ArrowColumnVector extends ColumnVector {
   // All arrow column vectors share one allocator
-  private static BufferAllocator allocator = new RootAllocator(Integer.MAX_VALUE);
+  public static BufferAllocator allocator = new RootAllocator(Integer.MAX_VALUE);
 
   public static class ArrowArray extends Array {
     private ListVector vector;
@@ -91,13 +91,12 @@ public class ArrowColumnVector extends ColumnVector {
   }
 
   private NullableBitVector boolData;
-  private NullableBitVector.Mutator boolMutator;
 
   private NullableTinyIntVector byteData;
-  private NullableTinyIntVector.Mutator byteMutator;
 
   private NullableIntVector intData;
-  private NullableIntVector.Mutator intMutator;
+
+  private NullableBigIntVector longData;
 
   private NullableVarBinaryVector stringData;
   public NullableVarBinaryVector.Mutator stringMutator;
@@ -109,6 +108,17 @@ public class ArrowColumnVector extends ColumnVector {
     // todo: do not create childColumns
     super(capacity, type, MemoryMode.OFF_HEAP);
     reserveInternal(capacity);
+  }
+
+  public ArrowColumnVector(FieldVector arrowVector) {
+    super(0, DataTypes.NullType, MemoryMode.OFF_HEAP);
+    if (arrowVector instanceof NullableIntVector) {
+      intData = (NullableIntVector) arrowVector;
+    } else if (arrowVector instanceof NullableBigIntVector) {
+      longData = (NullableBigIntVector) arrowVector;
+    } else if (arrowVector instanceof NullableVarBinaryVector) {
+      stringData = (NullableVarBinaryVector) arrowVector;
+    }
   }
 
   @Override
@@ -136,20 +146,6 @@ public class ArrowColumnVector extends ColumnVector {
     }
   }
 
-  private ArrowType toArrowType(DataType dt) {
-    if (dt == DataTypes.BooleanType) {
-      return ArrowType.Bool.INSTANCE;
-    } else if (dt == DataTypes.ByteType) {
-      return new ArrowType.Int(8, true);
-    } else if (dt == DataTypes.IntegerType) {
-      return new ArrowType.Int(8 * 4, true);
-    } else if (dt == DataTypes.StringType) {
-      return ArrowType.Utf8.INSTANCE;
-    } else {
-      throw new IllegalStateException("unknown type: " + dt.simpleString());
-    }
-  }
-
   private List<Field> getFields(DataType dt) {
     List<Field> children = new ArrayList<>(1);
     Field f;
@@ -157,7 +153,7 @@ public class ArrowColumnVector extends ColumnVector {
       DataType et = ((ArrayType) dt).elementType();
       f = new Field("ArrayElement", FieldType.nullable(ArrowType.List.INSTANCE), getFields(et));
     } else {
-      f = Field.nullable("ArrayElement", toArrowType(dt));
+      f = Field.nullable("ArrayElement", ArrowUtils.toArrowType(dt));
     }
     children.add(f);
     return children;
@@ -186,21 +182,24 @@ public class ArrowColumnVector extends ColumnVector {
         boolData = new NullableBitVector("BoolData", allocator);
         boolData.setInitialCapacity(capacity);
         boolData.allocateNew();
-        boolMutator = boolData.getMutator();
       }
     } else if (type == DataTypes.ByteType) {
       if (byteData == null) {
         byteData = new NullableTinyIntVector("ByteData", allocator);
         byteData.setInitialCapacity(capacity);
         byteData.allocateNew();
-        byteMutator = byteData.getMutator();
       }
     } else if (type == DataTypes.IntegerType) {
       if (intData == null) {
         intData = new NullableIntVector("IntData", allocator);
         intData.setInitialCapacity(capacity);
         intData.allocateNew();
-        intMutator = intData.getMutator();
+      }
+    } else if (type == DataTypes.LongType) {
+      if (longData == null) {
+        longData = new NullableBigIntVector("IntData", allocator);
+        longData.setInitialCapacity(capacity);
+        longData.allocateNew();
       }
     } else if (type == DataTypes.StringType) {
       if (stringData == null) {
@@ -230,12 +229,16 @@ public class ArrowColumnVector extends ColumnVector {
   @Override
   public void putNull(int rowId) {
     // todo: why the setNull is not in the Mutator interface?
-    if (boolMutator != null) {
-      boolMutator.setNull(rowId);
-    } else if (byteMutator != null) {
-      byteMutator.setNull(rowId);
+    if (boolData != null) {
+      boolData.getMutator().setNull(rowId);
+    } else if (byteData != null) {
+      byteData.getMutator().setNull(rowId);
+    } else if (intData != null) {
+      intData.getMutator().setNull(rowId);
     } else if (listData != null) {
       listData.getWriter().writeNull();
+    } else if (longData != null) {
+      longData.getMutator().setNull(rowId);
     }
   }
 
@@ -260,7 +263,7 @@ public class ArrowColumnVector extends ColumnVector {
     if (value) {
       data = 1;
     }
-    boolMutator.set(rowId, data);
+    boolData.getMutator().set(rowId, data);
   }
 
   @Override
@@ -275,7 +278,7 @@ public class ArrowColumnVector extends ColumnVector {
 
   @Override
   public void putByte(int rowId, byte value) {
-    byteMutator.set(rowId, value);
+    byteData.getMutator().set(rowId, value);
   }
 
   @Override
@@ -315,7 +318,7 @@ public class ArrowColumnVector extends ColumnVector {
 
   @Override
   public void putInt(int rowId, int value) {
-    intMutator.set(rowId, value);
+    intData.getMutator().set(rowId, value);
   }
 
   @Override
@@ -345,7 +348,7 @@ public class ArrowColumnVector extends ColumnVector {
 
   @Override
   public void putLong(int rowId, long value) {
-
+    longData.getMutator().set(rowId, value);
   }
 
   @Override
@@ -365,7 +368,7 @@ public class ArrowColumnVector extends ColumnVector {
 
   @Override
   public long getLong(int rowId) {
-    return 0;
+    return longData.getAccessor().get(rowId);
   }
 
   @Override
