@@ -34,6 +34,8 @@ from py4j.java_gateway import JavaClass
 
 from pyspark.serializers import CloudPickleSerializer
 
+import pyarrow as pa
+
 __all__ = [
     "DataType", "NullType", "StringType", "BinaryType", "BooleanType", "DateType",
     "TimestampType", "DecimalType", "DoubleType", "FloatType", "ByteType", "IntegerType",
@@ -1548,6 +1550,15 @@ class DatetimeConverter(object):
 # datetime is a subclass of date, we should register DatetimeConverter first
 register_input_converter(DatetimeConverter())
 register_input_converter(DateConverter())
+
+
+def toArrowSchema(types):
+    fields = []
+    for i in range(0, len(types)):
+        if type(types[i]) == LongType:
+            arrow_type = pa.int64()
+        fields.append(pa.field("c_" + str(i), arrow_type))
+    return pa.schema(fields)
 
 
 def _test():

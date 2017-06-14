@@ -556,6 +556,53 @@ class UTF8Deserializer(Serializer):
         return "UTF8Deserializer(%s)" % self.use_unicode
 
 
+class VectorizedSerializer(Serializer):
+
+    """
+    (De)serializes an Arrow stream.
+    """
+
+    def load_stream(self, stream):
+        import pyarrow as pa
+        reader = pa.open_stream(stream)
+        for batch in reader:
+            for row_index in range(0, batch.num_rows):
+                yield [batch[col_index][row_index].as_py() for col_index in range(0, batch.num_columns)]
+
+    def dump_stream(self, iterator, stream):
+        import pyarrow as pa
+        # the schema is set at worker.py#read_udfs_vectorized
+        writer = pa.RecordBatchStreamWriter(stream, self.schema)
+        row_id = 0
+        # todo: we should append data to arrow vector directly, but I can't find the API...
+        column_chunks = [[] for col_index in range(0, len(self.schema))]
+        for row in iterator:
+            if row_id < 10000:
+                if len(self.schema) == 1:
+                    column_chunks[0].append(row)
+                else:
+                    for col_index in range(0, len(self.schema)):
+                        column_chunks[col_index].append(row[col_index])
+                row_id += 1
+            else:
+                self._write(column_chunks, writer)
+                row_id = 0
+        if row_id > 0:
+            self._write(column_chunks, writer)
+        writer.close() # todo: does arrow close the socket?
+
+    def _write(self, column_chunks, writer):
+        import pyarrow as pa
+        vectors = []
+        for col_index in range(0, len(self.schema)):
+            # todo: can we reuse the vector?
+            vector = pa.array(column_chunks[col_index], self.schema[col_index].type)
+            vectors.append(vector)
+            column_chunks[col_index] = []
+        batch = pa.RecordBatch.from_arrays(vectors, self.schema.names)
+        writer.write_batch(batch)
+
+
 def read_long(stream):
     length = stream.read(8)
     if not length:
