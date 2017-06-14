@@ -73,7 +73,7 @@ public abstract class ColumnVector implements AutoCloseable {
    * Holder object to return an array. This object is intended to be reused. Callers should
    * copy the data out if it needs to be stored.
    */
-  public static final class Array extends ArrayData {
+  public static class Array extends ArrayData {
     // The data for this array. This array contains elements from
     // data[offset] to data[offset + length).
     public final ColumnVector data;
@@ -552,7 +552,7 @@ public abstract class ColumnVector implements AutoCloseable {
   /**
    * Returns the array at rowid.
    */
-  public final Array getArray(int rowId) {
+  public Array getArray(int rowId) {
     resultArray.length = getArrayLength(rowId);
     resultArray.offset = getArrayOffset(rowId);
     return resultArray;
@@ -619,7 +619,7 @@ public abstract class ColumnVector implements AutoCloseable {
   /**
    * Returns the UTF8String for rowId.
    */
-  public final UTF8String getUTF8String(int rowId) {
+  public UTF8String getUTF8String(int rowId) {
     if (dictionary == null) {
       ColumnVector.Array a = getByteArray(rowId);
       return UTF8String.fromBytes(a.byteArray, a.byteArrayOffset, a.length);
