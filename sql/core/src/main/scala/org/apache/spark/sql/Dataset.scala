@@ -2912,6 +2912,10 @@ class Dataset[T] private[sql](
     EvaluatePython.javaToPython(rdd)
   }
 
+  private[sql] def materialize(): Unit = {
+    queryExecution.toRdd.foreach(_ => Unit)
+  }
+
   private[sql] def collectToPython(): Int = {
     EvaluatePython.registerPicklers()
     withNewExecutionId {
