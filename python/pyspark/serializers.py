@@ -50,7 +50,7 @@ which contains two batches of two objects:
 """
 
 import sys
-from itertools import chain, product
+from itertools import chain, product, islice
 import marshal
 import struct
 import types
@@ -566,42 +566,33 @@ class VectorizedSerializer(Serializer):
         import pyarrow as pa
         reader = pa.open_stream(stream)
         for batch in reader:
-            for row in (zip(*[batch[col].to_pylist() for col in range(batch.num_columns)])):
+            for row in zip(*[batch[col].to_pylist() for col in xrange(batch.num_columns)]):
                 yield row
 
     def dump_stream(self, iterator, stream):
         import pyarrow as pa
         # the schema is set at worker.py#read_udfs_vectorized
         writer = pa.RecordBatchStreamWriter(stream, self.schema)
-        row_id = 0
-        # todo: we should append data to arrow vector directly, but I can't find the API...
-        column_chunks = [[] for col_index in xrange(len(self.schema))]
-        appends = [column_chunks[i].append for i in xrange(len(self.schema))]
-        for row in iterator:
-            if row_id < 10000:
-                if len(self.schema) == 1:
-                    appends[0](row)
-                else:
-                    for col_index in xrange(len(self.schema)):
-                        appends[col_index](row[col_index])
-                row_id += 1
-            else:
-                self._write(column_chunks, writer)
-                row_id = 0
-        if row_id > 0:
-            self._write(column_chunks, writer)
+        names = self.schema.names
+        types = [f.type for f in self.schema]
+        batch_size = 10000 # todo: make it configurable
+        # todo: can we reuse the vector memory?
+        if len(self.schema) == 1:
+            t = types[0]
+            for rows in grouped(iterator, batch_size):
+                batch = pa.RecordBatch.from_arrays([pa.array(list(rows), t)], names)
+                writer.write_batch(batch)
+        else:
+            for rows in grouped(iterator, batch_size):
+                vectors = [pa.array(cols, t) for (cols, t) in zip(zip(*list(rows)), types)]
+                batch = pa.RecordBatch.from_arrays(vectors, names)
+                writer.write_batch(batch)
         writer.close() # todo: does arrow close the socket?
 
-    def _write(self, column_chunks, writer):
-        import pyarrow as pa
-        vectors = []
-        for col_index in xrange(len(self.schema)):
-            # todo: can we reuse the vector?
-            vector = pa.array(column_chunks[col_index], self.schema[col_index].type)
-            vectors.append(vector)
-            column_chunks[col_index] = []
-        batch = pa.RecordBatch.from_arrays(vectors, self.schema.names)
-        writer.write_batch(batch)
+
+def grouped(iterator, batch_size):
+    for first in iterator:
+        yield chain([first], islice(iterator, batch_size - 1))
 
 
 def read_long(stream):
