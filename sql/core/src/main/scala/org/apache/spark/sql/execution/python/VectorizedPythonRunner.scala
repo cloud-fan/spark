@@ -156,6 +156,7 @@ class VectorizedPythonRunner(
             case (dt, index) => dt match {
               case IntegerType => result.setInt(index, vectors(index).getInt(currentRowId))
               case LongType => result.setLong(index, vectors(index).getLong(currentRowId))
+              case StringType => result.update(index, vectors(index).getUTF8String(currentRowId))
             }
           }
           currentRowId += 1
@@ -204,8 +205,9 @@ class VectorizedPythonRunner(
         v.getMutator.setSafe(rowId, row.getInt(columnIndex))
       case v: NullableBigIntVector =>
         v.getMutator.setSafe(rowId, row.getLong(columnIndex))
-      case v: NullableVarBinaryVector =>
-        v.getMutator.set(rowId, row.getUTF8String(columnIndex).getBytes)
+      case v: NullableVarCharVector =>
+        val str = row.getUTF8String(columnIndex)
+        v.getMutator.setSafe(rowId, str.getByteBuffer, 0, str.numBytes())
     }
 
     override def run(): Unit = Utils.logUncaughtExceptions {

@@ -21,6 +21,7 @@ import org.apache.arrow.vector.complex.ListVector
 
 import org.apache.spark.SparkFunSuite
 import org.apache.spark.sql.types.{ArrayType, BooleanType, IntegerType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 class ArrowColumnVectorSuite extends SparkFunSuite {
 
@@ -37,8 +38,8 @@ class ArrowColumnVectorSuite extends SparkFunSuite {
     // todo: for existing `UTF8String`, we should just pass the memory address and length to this
     // mutator, but the Arrow side forces us to pass a `ArrowBuf`, how to create `ArrowBuf` from
     // an existing memory address?
-    vector.stringMutator.set(0, "abc".getBytes("utf8"))
-    vector.stringMutator.set(1, "hello".getBytes("utf8"))
+    vector.stringMutator.setSafe(0, UTF8String.fromString("abc").getByteBuffer, 0, 3)
+    vector.stringMutator.setSafe(1, UTF8String.fromString("hello").getByteBuffer, 0, 5)
     assert(vector.getUTF8String(0).toString == "abc")
     assert(vector.getUTF8String(1).toString == "hello")
   }

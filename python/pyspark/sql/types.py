@@ -1557,6 +1557,8 @@ def toArrowSchema(types):
     for i in range(0, len(types)):
         if type(types[i]) == LongType:
             arrow_type = pa.int64()
+        elif type(types[i]) == StringType:
+            arrow_type = pa.string()
         fields.append(pa.field("c_" + str(i), arrow_type))
     return pa.schema(fields)
 

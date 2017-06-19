@@ -25,7 +25,7 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.reader.FieldReader;
-import org.apache.arrow.vector.holders.NullableVarBinaryHolder;
+import org.apache.arrow.vector.holders.NullableVarCharHolder;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -98,8 +98,8 @@ public class ArrowColumnVector extends ColumnVector {
 
   private NullableBigIntVector longData;
 
-  private NullableVarBinaryVector stringData;
-  public NullableVarBinaryVector.Mutator stringMutator;
+  private NullableVarCharVector stringData;
+  public NullableVarCharVector.Mutator stringMutator;
 
   public ListVector listData;
   private ArrowArray arrowArray;
@@ -116,8 +116,8 @@ public class ArrowColumnVector extends ColumnVector {
       intData = (NullableIntVector) arrowVector;
     } else if (arrowVector instanceof NullableBigIntVector) {
       longData = (NullableBigIntVector) arrowVector;
-    } else if (arrowVector instanceof NullableVarBinaryVector) {
-      stringData = (NullableVarBinaryVector) arrowVector;
+    } else if (arrowVector instanceof NullableVarCharVector) {
+      stringData = (NullableVarCharVector) arrowVector;
     }
   }
 
@@ -132,7 +132,7 @@ public class ArrowColumnVector extends ColumnVector {
 
   }
 
-  private NullableVarBinaryHolder stringResult = new NullableVarBinaryHolder();
+  private NullableVarCharHolder stringResult = new NullableVarCharHolder();
 
   @Override
   public UTF8String getUTF8String(int rowId) {
@@ -203,7 +203,7 @@ public class ArrowColumnVector extends ColumnVector {
       }
     } else if (type == DataTypes.StringType) {
       if (stringData == null) {
-        stringData = new NullableVarBinaryVector("StringData", allocator);
+        stringData = new NullableVarCharVector("StringData", allocator);
         stringData.setInitialCapacity(capacity);
         stringData.allocateNew();
         stringMutator = stringData.getMutator();
