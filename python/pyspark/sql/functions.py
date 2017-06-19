@@ -1927,6 +1927,69 @@ class UserDefinedFunction(object):
         return wrapper
 
 
+class ColumnarUDF(object):
+    """
+    Columnar user defined function in Python
+
+    .. versionadded:: 2.3
+    """
+    def __init__(self, func, returnType, name=None):
+        if not callable(func):
+            raise TypeError(
+                "Not a function or callable (__call__ is not defined): "
+                "{0}".format(type(func)))
+
+        self.func = func
+        self.returnType = (
+            returnType if isinstance(returnType, DataType)
+            else _parse_datatype_string(returnType))
+        # Stores UserDefinedPythonFunctions jobj, once initialized
+        self._judf_placeholder = None
+        self._name = name or (
+            func.__name__ if hasattr(func, '__name__')
+            else func.__class__.__name__)
+
+    @property
+    def _judf(self):
+        # It is possible that concurrent access, to newly created UDF,
+        # will initialize multiple UserDefinedPythonFunctions.
+        # This is unlikely, doesn't affect correctness,
+        # and should have a minimal performance impact.
+        if self._judf_placeholder is None:
+            self._judf_placeholder = self._create_judf()
+        return self._judf_placeholder
+
+    def _create_judf(self):
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.builder.getOrCreate()
+        sc = spark.sparkContext
+
+        wrapped_func = _wrap_function(sc, self.func, self.returnType)
+        jdt = spark._jsparkSession.parseDataType(self.returnType.json())
+        judf = sc._jvm.org.apache.spark.sql.execution.python.ColumnarPythonUDF(
+            self._name, wrapped_func, jdt)
+        return judf
+
+    def __call__(self, *cols):
+        judf = self._judf
+        sc = SparkContext._active_spark_context
+        return Column(judf.apply(_to_seq(sc, cols, _to_java_column)))
+
+    def _wrapped(self):
+        """
+        Wrap this udf with a function and attach docstring from func
+        """
+        @functools.wraps(self.func)
+        def wrapper(*args):
+            return self(*args)
+
+        wrapper.func = self.func
+        wrapper.returnType = self.returnType
+
+        return wrapper
+
+
 @since(1.3)
 def udf(f=None, returnType=StringType()):
     """Creates a :class:`Column` expression representing a user defined function (UDF).

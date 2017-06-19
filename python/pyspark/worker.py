@@ -121,10 +121,10 @@ def read_udfs_vectorized(pickleSer, infile):
         args = ["a[%d]" % o for o in arg_offsets]
         call_udf.append("f%d(%s)" % (i, ", ".join(args)))
     # Create function like this:
-    #   lambda a: (f0(a[0]), f1(a[1], a[2]), f2(a[3]))
+    #   lambda a: [f0(a[0]), f1(a[1], a[2]), f2(a[3])]
     # In the special case of a single UDF this will return a single result rather
     # than a tuple of results; this is the format that the JVM side expects.
-    mapper_str = "lambda a: (%s)" % (", ".join(call_udf))
+    mapper_str = "lambda a: [%s]" % (", ".join(call_udf))
     mapper = eval(mapper_str, udfs)
 
     func = lambda _, it: map(mapper, it)
@@ -221,6 +221,7 @@ def main(infile, outfile):
             process()
     except Exception:
         try:
+            1 / 0
             write_int(SpecialLengths.PYTHON_EXCEPTION_THROWN, outfile)
             write_with_length(traceback.format_exc().encode("utf-8"), outfile)
         except IOError:

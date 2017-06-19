@@ -21,7 +21,7 @@ from collections import namedtuple
 from pyspark import since
 from pyspark.rdd import ignore_unicode_prefix
 from pyspark.sql.dataframe import DataFrame
-from pyspark.sql.functions import UserDefinedFunction
+from pyspark.sql.functions import UserDefinedFunction, ColumnarUDF
 from pyspark.sql.types import IntegerType, StringType, StructType
 
 
@@ -257,6 +257,11 @@ class Catalog(object):
         [Row(stringLengthInt(test)=4)]
         """
         udf = UserDefinedFunction(f, returnType, name)
+        self._jsparkSession.udf().registerPython(name, udf._judf)
+        return udf._wrapped()
+
+    def registerColumnarFunction(self, name, f, returnType):
+        udf = ColumnarUDF(f, returnType, name)
         self._jsparkSession.udf().registerPython(name, udf._judf)
         return udf._wrapped()
 

@@ -566,8 +566,7 @@ class VectorizedSerializer(Serializer):
         import pyarrow as pa
         reader = pa.open_stream(stream)
         for batch in reader:
-            for row in zip(*[batch[col].to_pylist() for col in xrange(batch.num_columns)]):
-                yield row
+            yield [batch[col].to_pandas() for col in xrange(batch.num_columns)]
 
     def dump_stream(self, iterator, stream):
         import pyarrow as pa
@@ -575,24 +574,10 @@ class VectorizedSerializer(Serializer):
         writer = pa.RecordBatchStreamWriter(stream, self.schema)
         names = self.schema.names
         types = [f.type for f in self.schema]
-        batch_size = 10000 # todo: make it configurable
-        # todo: can we reuse the vector memory?
-        if len(self.schema) == 1:
-            t = types[0]
-            for rows in grouped(iterator, batch_size):
-                batch = pa.RecordBatch.from_arrays([pa.array(list(rows), t)], names)
-                writer.write_batch(batch)
-        else:
-            for rows in grouped(iterator, batch_size):
-                vectors = [pa.array(cols, t) for (cols, t) in zip(zip(*list(rows)), types)]
-                batch = pa.RecordBatch.from_arrays(vectors, names)
-                writer.write_batch(batch)
+        for arrays in iterator:
+            batch = pa.RecordBatch.from_arrays([pa.Array.from_pandas(array) for array in arrays], names)
+            writer.write_batch(batch)
         writer.close() # todo: does arrow close the socket?
-
-
-def grouped(iterator, batch_size):
-    for first in iterator:
-        yield chain([first], islice(iterator, batch_size - 1))
 
 
 def read_long(stream):

@@ -30,7 +30,7 @@ import org.apache.spark.sql.catalyst.{JavaTypeInference, ScalaReflection}
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
 import org.apache.spark.sql.catalyst.expressions.{Expression, ScalaUDF}
 import org.apache.spark.sql.execution.aggregate.ScalaUDAF
-import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
+import org.apache.spark.sql.execution.python.{ColumnarPythonUDF, UserDefinedPythonFunction}
 import org.apache.spark.sql.expressions.{UserDefinedAggregateFunction, UserDefinedFunction}
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.util.Utils
@@ -59,6 +59,21 @@ class UDFRegistration private[sql] (functionRegistry: FunctionRegistry) extends 
         | pythonIncludes: ${udf.func.pythonIncludes}
         | pythonExec: ${udf.func.pythonExec}
         | dataType: ${udf.dataType}
+      """.stripMargin)
+
+    functionRegistry.createOrReplaceTempFunction(name, udf.builder)
+  }
+
+  protected[sql] def registerPython(name: String, udf: ColumnarPythonUDF): Unit = {
+    log.debug(
+      s"""
+         | Registering new columnar function:
+         | name: $name
+         | command: ${udf.func.command.toSeq}
+         | envVars: ${udf.func.envVars}
+         | pythonIncludes: ${udf.func.pythonIncludes}
+         | pythonExec: ${udf.func.pythonExec}
+         | dataType: ${udf.dataType}
       """.stripMargin)
 
     functionRegistry.createOrReplaceTempFunction(name, udf.builder)
