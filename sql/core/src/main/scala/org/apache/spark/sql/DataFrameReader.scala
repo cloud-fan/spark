@@ -27,12 +27,15 @@ import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.json.{CreateJacksonParser, JacksonParser, JSONOptions}
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.LogicalRDD
 import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.sql.execution.datasources.{DataSource, FailureSafeParser}
 import org.apache.spark.sql.execution.datasources.csv._
 import org.apache.spark.sql.execution.datasources.jdbc._
 import org.apache.spark.sql.execution.datasources.json.TextInputJsonDataSource
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
+import org.apache.spark.sql.sources.v2.{DataSourceV2, DataSourceV2SchemaProvider}
 import org.apache.spark.sql.types.{StringType, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -181,13 +184,40 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
         "read files of Hive data source directly.")
     }
 
-    sparkSession.baseRelationToDataFrame(
-      DataSource.apply(
-        sparkSession,
-        paths = paths,
-        userSpecifiedSchema = userSpecifiedSchema,
-        className = source,
-        options = extraOptions.toMap).resolveRelation())
+    val cls = DataSource.lookupDataSource(source)
+    if (classOf[DataSourceV2].isAssignableFrom(cls)) {
+      // TODO: merge this into `DataSource`
+      val dataSource = cls.newInstance().asInstanceOf[DataSourceV2]
+      val options = CaseInsensitiveMap(extraOptions.toMap)
+
+      val schema = dataSource match {
+        case ds: DataSourceV2SchemaProvider if ds.acceptsUserDefinedSchema =>
+          userSpecifiedSchema.getOrElse(ds.inferSchema(options))
+
+        case ds: DataSourceV2SchemaProvider =>
+          val inferredSchema = ds.inferSchema(options)
+          if (userSpecifiedSchema.isDefined && userSpecifiedSchema.get != inferredSchema) {
+            throw new AnalysisException(s"$ds does not allow user-specified schemas.")
+          }
+          inferredSchema
+
+        case _ =>
+          userSpecifiedSchema.getOrElse {
+            throw new AnalysisException(s"A schema needs to be specified when using $dataSource.")
+          }
+      }
+
+      val reader = dataSource.createReader(schema, options)
+      Dataset.ofRows(sparkSession, DataSourceV2Relation(schema.toAttributes, reader))
+    } else {
+      sparkSession.baseRelationToDataFrame(
+        DataSource.apply(
+          sparkSession,
+          paths = paths,
+          userSpecifiedSchema = userSpecifiedSchema,
+          className = source,
+          options = extraOptions.toMap).resolveRelation())
+    }
   }
 
   /**
