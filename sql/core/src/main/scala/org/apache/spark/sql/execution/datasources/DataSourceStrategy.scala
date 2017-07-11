@@ -20,7 +20,6 @@ package org.apache.spark.sql.execution.datasources
 import java.util.concurrent.Callable
 
 import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
@@ -34,8 +33,9 @@ import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.{InsertIntoTable, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, UnknownPartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.{RowDataSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{LogicalRDD, RowDataSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.command._
+import org.apache.spark.sql.execution.exchange.ShuffleExchange
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types._
@@ -293,6 +293,33 @@ case class DataSourceStrategy(conf: SQLConf) extends Strategy with Logging with 
         UnknownPartitioning(0),
         Map.empty,
         None) :: Nil
+
+    case PhysicalOperation(projects, filters, hashKeys, DataSourceRelation(output, reader)) =>
+      val requiredColumns = null
+      var finalReader = reader
+
+      var project: LogicalPlan => LogicalPlan = identity
+      val afterColumnPruning = finalReader.withRequiredColumns(requiredColumns)
+      if (afterColumnPruning.isEmpty) {
+        project = Project(projects, _)
+      } else {
+        finalReader = afterColumnPruning.get
+      }
+
+      finalReader = finalReader.withFilter(translateFilter(filters))
+      val unhandledFilters = finalReader.unhandledFilters(translateFilter(filters))
+
+      var shuffle: LogicalPlan => LogicalPlan = identity
+      val afterHashPartition = finalReader.withHashPartition(hashKeys)
+      if (afterColumnPruning.isEmpty) {
+        shuffle = ShuffleExchange(HashPartitioning(...), _)
+      } else {
+        finalReader = afterHashPartition.get
+      }
+
+      shuffle(Filter(unhandledFilters.reduce(And), project(LogicalRDD(finalReader.readBatches()))))
+
+
 
     case _ => Nil
   }
