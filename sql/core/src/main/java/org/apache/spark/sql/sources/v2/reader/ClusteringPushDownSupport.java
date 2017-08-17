@@ -17,25 +17,16 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
-import org.apache.spark.annotation.Experimental;
-import org.apache.spark.annotation.InterfaceStability;
 
 /**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-partition
+ * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-clustering
  * the data and avoid shuffle at Spark side.
- *
- * Note that this interface is marked as unstable, as the implementation needs to be consistent
- * with the Spark SQL shuffle hash function, which is internal and may get changed over different
- * Spark versions.
  */
-@Experimental
-@InterfaceStability.Unstable
-public interface HashPartitionPushDownSupport {
+public interface ClusteringPushDownSupport {
   /**
-   * Returns true if the implementation can handle this hash partitioning requirement and save a
-   * shuffle at Spark side. The hash function is defined as: constructing a
-   * {@link org.apache.spark.sql.catalyst.expressions.UnsafeRow} with the values of the given
-   * partition columns, and call its `hashCode()` method.
+   * Returns true if the implementation can handle this clustering requirement and save a shuffle
+   * at Spark side. Clustering means, if two records have same values for the given clustering
+   * columns, they must be produced by the same read task.
    */
-  boolean pushDownHashPartition(String[] partitionColumns);
+  boolean pushDownClustering(String[] clusteringColumns);
 }
