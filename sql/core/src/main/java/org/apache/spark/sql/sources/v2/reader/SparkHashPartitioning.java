@@ -17,22 +17,24 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
+public class SparkHashPartitioning implements Partitioning {
+  private int numPartitions;
 
-/**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-clustering
- * the data and avoid shuffle at Spark side.
- */
-public interface ClusteringPushDownSupport {
-  /**
-   * Returns a non-null `Partitioning` if the implementation can handle this clustering requirement
-   * and save a shuffle at Spark side. Clustering means, if two records have same values for the
-   * given clustering columns, they must be produced by the same read task.
-   */
-  Partitioning pushDownClustering(String[] clusteringColumns);
+  public SparkHashPartitioning(int numPartitions) {
+    this.numPartitions = numPartitions;
+  }
 
-  /**
-   * Cancel this clustering push down. This will be called if Spark finds out that we can't avoid
-   * the shuffle after we push down the clustering.
-   */
-  void cancel();
+  @Override
+  public boolean compatibleWith(Partitioning other) {
+    if (other instanceof SparkHashPartitioning) {
+      return this.numPartitions() == other.numPartitions();
+    } else {
+      return other.compatibleWith(this);
+    }
+  }
+
+  @Override
+  public int numPartitions() {
+    return numPartitions;
+  }
 }

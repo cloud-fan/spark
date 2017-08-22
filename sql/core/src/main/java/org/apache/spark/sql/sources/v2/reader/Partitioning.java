@@ -17,22 +17,22 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
-
 /**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-clustering
- * the data and avoid shuffle at Spark side.
+ * An interface to describe how the data is partitioned. This is returned by
+ * `ClusteringPushDownSupport.pushDownClustering`, and data source implementations must guarantee
+ * that the returned partitioning satisfies the clustering requirement.
  */
-public interface ClusteringPushDownSupport {
+public interface Partitioning {
   /**
-   * Returns a non-null `Partitioning` if the implementation can handle this clustering requirement
-   * and save a shuffle at Spark side. Clustering means, if two records have same values for the
-   * given clustering columns, they must be produced by the same read task.
+   * Returns true if this partitioning is compatible with the other partitioning. Think about
+   * joining 2 data sources, even if both these 2 data sources satisfy the clustering requirement,
+   * we still can not join them because they are uncompatible, e.g. different number of partitions,
+   * different partitioner, etc.
    */
-  Partitioning pushDownClustering(String[] clusteringColumns);
+  boolean compatibleWith(Partitioning other);
 
   /**
-   * Cancel this clustering push down. This will be called if Spark finds out that we can't avoid
-   * the shuffle after we push down the clustering.
+   * The number of read tasks that will be used to produce data.
    */
-  void cancel();
+  int numPartitions();
 }
