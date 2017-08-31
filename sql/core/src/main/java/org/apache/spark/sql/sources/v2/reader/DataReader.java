@@ -17,14 +17,11 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
+import java.io.Closeable;
+import java.util.Iterator;
+
 /**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-sort
- * the data and avoid sorting at Spark side.
+ * A data reader returned by a read task and is responsible for outputting data for an RDD
+ * partition.
  */
-public interface SortPushDown {
-  /**
-   * Returns true if the implementation can handle this sorting requirement and save a sort
-   * operation at Spark side.
-   */
-  boolean pushDownSort(String[] sortingColumns, boolean asc, boolean nullFirst);
-}
+public interface DataReader<T> extends Iterator<T>, Closeable {}

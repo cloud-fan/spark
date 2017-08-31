@@ -17,14 +17,10 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
-/**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-sort
- * the data and avoid sorting at Spark side.
- */
-public interface SortPushDown {
-  /**
-   * Returns true if the implementation can handle this sorting requirement and save a sort
-   * operation at Spark side.
-   */
-  boolean pushDownSort(String[] sortingColumns, boolean asc, boolean nullFirst);
+import java.util.OptionalLong;
+
+public interface Statistics {
+  OptionalLong getSize();
+  OptionalLong getRows();
+  OptionalLong getDistinctValues(String columnName);
 }

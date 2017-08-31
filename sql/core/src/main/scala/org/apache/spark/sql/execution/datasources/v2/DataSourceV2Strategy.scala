@@ -17,14 +17,13 @@
 
 package org.apache.spark.sql.execution.datasources.v2
 
-import scala.collection.mutable.ListBuffer
-
 import org.apache.spark.sql.Strategy
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.sources.v2.reader.{CatalystFilterPushDownSupport, ColumnPruningSupport, FilterPushDownSupport}
 
 object DataSourceV2Strategy extends Strategy {
@@ -44,24 +43,29 @@ object DataSourceV2Strategy extends Strategy {
         case _ => false
       }
 
-      val stayUpFilters = ListBuffer.empty[Expression]
-      reader match {
+      val stayUpFilters: Seq[Expression] = reader match {
         case r: CatalystFilterPushDownSupport =>
-          for (filter <- filters) {
-            if (!r.pushDownCatalystFilter(filter)) {
-              stayUpFilters += filter
-            }
-          }
+          r.pushDownCatalystFilters(filters.toArray)
         case r: FilterPushDownSupport =>
-          for (filter <- filters) {
-            val publicFilter = DataSourceStrategy.translateFilter(filter)
-            if (publicFilter.isEmpty) {
-              stayUpFilters += filter
-            } else if (!r.pushDownFilter(publicFilter.get)) {
-              stayUpFilters += filter
-            }
-          }
-        case _ =>
+          // A map from original Catalyst expressions to corresponding translated data source filters.
+          // If a predicate is not in this map, it means it cannot be pushed down.
+          val translatedMap: Map[Expression, Filter] = filters.flatMap { p =>
+            DataSourceStrategy.translateFilter(p).map(f => p -> f)
+          }.toMap
+
+          // Catalyst predicate expressions that cannot be converted to data source filters.
+          val nonconvertiblePredicates = filters.filterNot(translatedMap.contains)
+
+          // Data source filters that cannot be pushed down. An unhandled filter means
+          // the data source cannot guarantee the rows returned can pass the filter.
+          // As a result we must return it so Spark can plan an extra filter operator.
+          val unhandledFilters = r.pushDownFilters(translatedMap.values.toArray).toSet
+          val unhandledPredicates = translatedMap.filter { case (_, f) =>
+            unhandledFilters.contains(f)
+          }.keys
+
+          nonconvertiblePredicates ++ unhandledPredicates
+        case _ => filters
       }
 
       val scan = DataSourceV2ScanExec(
@@ -71,7 +75,7 @@ object DataSourceV2Strategy extends Strategy {
         ExpressionSet(filters),
         Nil)
 
-      val filterCondition = filters.reduceLeftOption(And)
+      val filterCondition = stayUpFilters.reduceLeftOption(And)
       val withFilter = filterCondition.map(FilterExec(_, scan)).getOrElse(scan)
 
       val withProject = if (projects == withFilter.output) {

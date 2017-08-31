@@ -15,16 +15,12 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2.reader;
+package org.apache.spark.sql.sources.v2.writer;
 
 /**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-sort
- * the data and avoid sorting at Spark side.
+ * A mix in interface for `DataSourceV2Writer`. Users can implement this interface to allow Spark
+ * to specify partition columns for writing data into this data source.
  */
-public interface SortPushDown {
-  /**
-   * Returns true if the implementation can handle this sorting requirement and save a sort
-   * operation at Spark side.
-   */
-  boolean pushDownSort(String[] sortingColumns, boolean asc, boolean nullFirst);
+public interface PartitioningSupport {
+  void setPartitionColumns(String[] partitionColumns);
 }

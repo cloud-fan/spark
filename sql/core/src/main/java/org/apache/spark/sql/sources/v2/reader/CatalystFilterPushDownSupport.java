@@ -29,12 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression;
 @InterfaceStability.Unstable
 public interface CatalystFilterPushDownSupport {
   /**
-   * Push down one filter, returns true if this filter can be pushed down to this data source,
-   * false otherwise. This method might be called many times if more than one filter need to be
-   * pushed down.
-   *
-   * TODO: we can also make it `Expression[] pushDownCatalystFilters(Expression[] filters)` which
-   * returns unsupported filters.
+   * Push down filters, returns unsupported filters.
    */
-  boolean pushDownCatalystFilter(Expression filter);
+  Expression[] pushDownCatalystFilters(Expression[] filters);
 }

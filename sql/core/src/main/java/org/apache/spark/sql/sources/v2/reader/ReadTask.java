@@ -20,8 +20,8 @@ package org.apache.spark.sql.sources.v2.reader;
 import java.io.Serializable;
 
 /**
- * A read task returned by a data source reader and is responsible for outputting data for an RDD
- * partition.
+ * A read task returned by a data source reader and is responsible to create the data reader.
+ * The relationship between `ReadTask` and `DataReader` is similar to `Iterable` and `Iterator`.
  */
 public interface ReadTask<T> extends Serializable {
   /**
@@ -33,25 +33,5 @@ public interface ReadTask<T> extends Serializable {
     return new String[0];
   }
 
-  /**
-   * This method will be called before running this read task, users can overwrite this method
-   * and put initialization logic here.
-   */
-  default void open() {}
-
-  /**
-   * Proceed to next record, returns false if there is no more records.
-   */
-  boolean next();
-
-  /**
-   * Return the current record. This method should return same value until `next` is called.
-   */
-  T get();
-
-  /**
-   * This method will be called after finishing this read task, users can overwrite this method
-   * and put clean up logic here.
-   */
-  default void close() {}
+  DataReader<T> getReader();
 }

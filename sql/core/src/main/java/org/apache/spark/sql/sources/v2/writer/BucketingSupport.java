@@ -15,14 +15,14 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2;
+package org.apache.spark.sql.sources.v2.writer;
 
 /**
- * A mix in interface for `DataSourceV2Reader` and `DataSourceV2Writer`. Users can implement this
- * interface to specify the bucket/sort columns of the reader/writer, to improve performance.
+ * A mix in interface for `DataSourceV2Writer`. Users can implement this interface to allow Spark
+ * to specify bucket/sort columns for writing data into this data source.
  */
 public interface BucketingSupport {
   void setBucketColumns(String[] bucketColumns, int numBuckets);
 
-  void setSortColumns(String[] sortColumns);
+  void setSortColumns(String[] sortColumns, boolean asc, boolean nullFirst);
 }

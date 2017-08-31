@@ -15,12 +15,21 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2;
+package org.apache.spark.sql.sources.v2.reader.distribution;
 
 /**
- * A mix in interface for `DataSourceV2Reader` and `DataSourceV2Writer`. Users can implement this
- * interface to specify the partition columns of the reader/writer, to improve performance.
+ * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to report the
+ * output partitioning, to avoid shuffle at Spark side if the output partitioning can satisfy the
+ * distribution requirement.
  */
-public interface PartitioningSupport {
-  void setPartitionColumns(String[] partitionColumns);
+public interface DistributionSupport {
+  /**
+   * Returns an array of partitionings this data source can output. Spark will pick one partitioning
+   * that can avoid shuffle, and call `pickPartitioning` to notify the data source which
+   * partitioning was picked. Note that, if none of the partitions can help to avoid shuffle,
+   * `NoPartitioning` will be passed to `pickPartitioning`.
+   */
+  Partitioning[] getPartitionings();
+
+  void pickPartitioning(Partitioning p);
 }

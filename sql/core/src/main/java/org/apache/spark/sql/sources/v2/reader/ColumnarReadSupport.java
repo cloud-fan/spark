@@ -35,6 +35,9 @@ public interface ColumnarReadSupport {
    * A safety door for columnar reader. It's possible that the implementation can only support
    * columnar reads for some certain columns, users can overwrite this method to fallback to
    * normal read path under some conditions.
+   *
+   * Note that, if the implementation always return true here, then he can throw exception in
+   * the row based `DataSourceV2Reader.createReadTasks`, as it will never be called.
    */
   default boolean supportsColumnarReads() {
     return true;

@@ -15,26 +15,11 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2.reader;
+package org.apache.spark.sql.sources.v2.reader.distribution;
 
-public class SparkHashPartitioning implements Partitioning {
-  private int numPartitions;
-
-  public SparkHashPartitioning(int numPartitions) {
-    this.numPartitions = numPartitions;
-  }
-
-  @Override
-  public boolean compatibleWith(Partitioning other) {
-    if (other instanceof SparkHashPartitioning) {
-      return this.numPartitions() == other.numPartitions();
-    } else {
-      return other.compatibleWith(this);
-    }
-  }
-
-  @Override
-  public int numPartitions() {
-    return numPartitions;
-  }
-}
+/**
+ * Specifies how data should be distributed when a query is executed in parallel on many machines.
+ *
+ * Current implementations: `ClusteredDistribution`.
+ */
+public interface Distribution {}

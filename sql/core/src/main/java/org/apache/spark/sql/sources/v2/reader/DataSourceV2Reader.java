@@ -17,12 +17,15 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import org.apache.spark.annotation.Experimental;
 import org.apache.spark.annotation.InterfaceStability;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder;
+import org.apache.spark.sql.catalyst.encoders.RowEncoder;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.types.StructType;
 
@@ -47,13 +50,16 @@ public abstract class DataSourceV2Reader {
    * output.
    */
   // TODO: maybe we should support arbitrary type and work with Dataset, instead of only Row.
-  public abstract List<ReadTask<Row>> createReadTasks();
+  protected abstract List<ReadTask<Row>> createReadTasks();
 
   /**
    * Inside Spark, the input rows will be converted to `UnsafeRow`s before processing. To avoid
    * this conversion, implementations can overwrite this method and output `UnsafeRow`s directly.
    * Note that, this is an experimental and unstable interface, as `UnsafeRow` is not public and
    * may get changed in future Spark versions.
+   *
+   * Note that, if the implement overwrites this method, he should also overwrite `createReadTasks`
+   * to throw exception, as it will never be called.
    */
   @Experimental
   @InterfaceStability.Unstable
@@ -62,5 +68,50 @@ public abstract class DataSourceV2Reader {
     return createReadTasks().stream()
         .map(rowGenerator -> new RowToUnsafeRowReadTask(rowGenerator, schema))
         .collect(Collectors.toList());
+  }
+}
+
+class RowToUnsafeRowReadTask implements ReadTask<UnsafeRow> {
+  private final ReadTask<Row> rowReadTask;
+  private final StructType schema;
+
+  RowToUnsafeRowReadTask(ReadTask<Row> rowReadTask, StructType schema) {
+    this.rowReadTask = rowReadTask;
+    this.schema = schema;
+  }
+
+  @Override
+  public String[] preferredLocations() {
+    return rowReadTask.preferredLocations();
+  }
+
+  @Override
+  public DataReader<UnsafeRow> getReader() {
+    return new RowToUnsafeDataReader(rowReadTask.getReader(), RowEncoder.apply(schema));
+  }
+}
+
+class RowToUnsafeDataReader implements DataReader<UnsafeRow> {
+  private final DataReader<Row> rowReader;
+  private final ExpressionEncoder<Row> encoder;
+
+  RowToUnsafeDataReader(DataReader<Row> rowReader, ExpressionEncoder<Row> encoder) {
+    this.rowReader = rowReader;
+    this.encoder = encoder;
+  }
+
+  @Override
+  public boolean hasNext() {
+    return rowReader.hasNext();
+  }
+
+  @Override
+  public UnsafeRow next() {
+    return (UnsafeRow) encoder.toRow(rowReader.next());
+  }
+
+  @Override
+  public void close() throws IOException {
+    rowReader.close();
   }
 }

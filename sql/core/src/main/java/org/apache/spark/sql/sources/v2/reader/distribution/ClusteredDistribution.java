@@ -15,24 +15,20 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2.reader;
-
+package org.apache.spark.sql.sources.v2.reader.distribution;
 
 /**
- * A mix in interface for `DataSourceV2Reader`. Users can implement this interface to pre-clustering
- * the data and avoid shuffle at Spark side.
+ * Represents a distribution where records that share the same values for the `clusteringColumns`
+ * will be co-located, which means, they will be produced by the same `ReadTask`.
  */
-public interface ClusteringPushDownSupport {
-  /**
-   * Returns a non-null `Partitioning` if the implementation can handle this clustering requirement
-   * and save a shuffle at Spark side. Clustering means, if two records have same values for the
-   * given clustering columns, they must be produced by the same read task.
-   */
-  Partitioning pushDownClustering(String[] clusteringColumns);
+public class ClusteredDistribution {
+  private String[] clusteringColumns;
 
-  /**
-   * Cancel this clustering push down. This will be called if Spark finds out that we can't avoid
-   * the shuffle after we push down the clustering.
-   */
-  void cancel();
+  public ClusteredDistribution(String[] clusteringColumns) {
+    this.clusteringColumns = clusteringColumns;
+  }
+
+  public String[] getClusteringColumns() {
+    return clusteringColumns;
+  }
 }

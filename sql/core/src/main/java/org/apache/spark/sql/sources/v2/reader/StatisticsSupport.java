@@ -22,6 +22,5 @@ package org.apache.spark.sql.sources.v2.reader;
  * statistics like sizeInBytes, to Spark.
  */
 public interface StatisticsSupport {
-  // todo: shall we add more statistics? what do we want?
-  long sizeInBytes();
+  Statistics getStatistics();
 }

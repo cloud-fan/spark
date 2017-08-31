@@ -15,21 +15,16 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2.reader;
+package org.apache.spark.sql.sources.v2.reader.distribution;
 
 /**
- * An interface to describe how the data is partitioned. This is returned by
- * `ClusteringPushDownSupport.pushDownClustering`, and data source implementations must guarantee
- * that the returned partitioning satisfies the clustering requirement.
+ * An interface to describe how the data is physically partitioned.
  */
 public interface Partitioning {
   /**
-   * Returns true if this partitioning is compatible with the other partitioning. Think about
-   * joining 2 data sources, even if both these 2 data sources satisfy the clustering requirement,
-   * we still can not join them because they are uncompatible, e.g. different number of partitions,
-   * different partitioner, etc.
+   * Returns true if this partitioning can satisfy the given distribution requirement.
    */
-  boolean compatibleWith(Partitioning other);
+  boolean satisfies(Distribution distribution);
 
   /**
    * The number of read tasks that will be used to produce data.
