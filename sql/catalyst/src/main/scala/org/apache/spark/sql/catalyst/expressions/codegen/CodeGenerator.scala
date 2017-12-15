@@ -217,21 +217,6 @@ class CodegenContext {
     partitionInitializationStatements.mkString("\n")
   }
 
-  /**
-   * Holds expressions that are equivalent. Used to perform subexpression elimination
-   * during codegen.
-   *
-   * For expressions that appear more than once, generate additional code to prevent
-   * recomputing the value.
-   *
-   * For example, consider two expression generated from this SQL statement:
-   *  SELECT (col1 + col2), (col1 + col2) / col3.
-   *
-   *  equivalentExpressions will match the tree containing `col1 + col2` and it will only
-   *  be evaluated once.
-   */
-  val equivalentExpressions: EquivalentExpressions = new EquivalentExpressions
-
   // Foreach expression that is participating in subexpression elimination, the state to use.
   val subExprEliminationExprs = mutable.HashMap.empty[Expression, SubExprEliminationState]
 
@@ -1003,8 +988,20 @@ class CodegenContext {
    * the mapping of common subexpressions to the generated functions.
    */
   private def subexpressionElimination(expressions: Seq[Expression]): Unit = {
+    // Holds expressions that are equivalent, to perform subexpression elimination.
+    //
+    // For expressions that appear more than once, generate additional code to prevent
+    // recomputing the value.
+    //
+    // For example, consider two expression generated from this SQL statement:
+    //   SELECT (col1 + col2), (col1 + col2) / col3.
+    //
+    // equivalentExpressions will match the tree containing `col1 + col2` and it will only
+    // be evaluated once.
+    val equivalentExpressions: EquivalentExpressions = new EquivalentExpressions
+
     // Add each expression tree and compute the common subexpressions.
-    expressions.foreach(equivalentExpressions.addExprTree(_))
+    expressions.foreach(equivalentExpressions.addExprTree)
 
     // Get all the expressions that appear at least twice and set up the state for subexpression
     // elimination.
@@ -1012,8 +1009,10 @@ class CodegenContext {
     commonExprs.foreach { e =>
       val expr = e.head
       val fnName = freshName("evalExpr")
-      val isNull = s"${fnName}IsNull"
-      val value = s"${fnName}Value"
+      val isNull = freshName("subExprIsNull")
+      addMutableState(JAVA_BOOLEAN, isNull)
+      val value = freshName("subExprValue")
+      addMutableState(javaType(expr.dataType), value)
 
       // Generate the code for this expression tree and wrap it in a function.
       val eval = expr.genCode(this)
@@ -1039,10 +1038,6 @@ class CodegenContext {
       //   2. Less code.
       // Currently, we will do this for all non-leaf only expression trees (i.e. expr trees with
       // at least two nodes) as the cost of doing it is expected to be low.
-      addMutableState(JAVA_BOOLEAN, isNull, s"$isNull = false;")
-      addMutableState(javaType(expr.dataType), value,
-        s"$value = ${defaultValue(expr.dataType)};")
-
       subexprFunctions += s"${addNewFunction(fnName, fn)}($INPUT_ROW);"
       val state = SubExprEliminationState(isNull, value)
       e.foreach(subExprEliminationExprs.put(_, state))
