@@ -40,20 +40,18 @@ case class DataSourceV2Relation(
     source: DataSourceV2,
     output: Seq[AttributeReference],
     options: Map[String, String],
-    userSpecifiedSchema: Option[StructType])
+    userSpecifiedSchema: Option[StructType],
+    reader: DataSourceReader)
   extends LeafNode with MultiInstanceRelation with DataSourceV2StringFormat {
-
-  import DataSourceV2Relation._
 
   override def pushedFilters: Seq[Expression] = Seq.empty
 
   override def simpleString: String = "RelationV2 " + metadataString
 
-  def newReader(): DataSourceReader = source.createReader(options, userSpecifiedSchema)
-
-  override def computeStats(): Statistics = newReader match {
+  override def computeStats(): Statistics = reader match {
     case r: SupportsReportStatistics =>
-      Statistics(sizeInBytes = r.getStatistics.sizeInBytes().orElse(conf.defaultSizeInBytes))
+      Statistics(sizeInBytes =
+        r.getStatistics(r.getMetadata).sizeInBytes().orElse(conf.defaultSizeInBytes))
     case _ =>
       Statistics(sizeInBytes = conf.defaultSizeInBytes)
   }
@@ -98,7 +96,8 @@ case class StreamingDataSourceV2Relation(
 
   override def computeStats(): Statistics = reader match {
     case r: SupportsReportStatistics =>
-      Statistics(sizeInBytes = r.getStatistics.sizeInBytes().orElse(conf.defaultSizeInBytes))
+      Statistics(sizeInBytes =
+        r.getStatistics(r.getMetadata).sizeInBytes().orElse(conf.defaultSizeInBytes))
     case _ =>
       Statistics(sizeInBytes = conf.defaultSizeInBytes)
   }
@@ -159,6 +158,6 @@ object DataSourceV2Relation {
       userSpecifiedSchema: Option[StructType]): DataSourceV2Relation = {
     val reader = source.createReader(options, userSpecifiedSchema)
     DataSourceV2Relation(
-      source, reader.readSchema().toAttributes, options, userSpecifiedSchema)
+      source, reader.getMetadata.getSchema().toAttributes, options, userSpecifiedSchema, reader)
   }
 }

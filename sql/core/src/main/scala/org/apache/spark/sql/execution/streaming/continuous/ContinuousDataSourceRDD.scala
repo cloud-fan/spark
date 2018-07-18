@@ -19,16 +19,16 @@ package org.apache.spark.sql.execution.streaming.continuous
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Row, SQLContext}
-import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDDPartition, RowToUnsafeInputPartitionReader}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousInputPartitionReader, PartitionOffset}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{NextIterator, ThreadUtils}
 
 class ContinuousDataSourceRDDPartition(
     val index: Int,
-    val inputPartition: InputPartition[UnsafeRow])
+    val inputSplit: InputSplit)
   extends Partition with Serializable {
 
   // This is semantically a lazy val - it's initialized once the first time a call to
@@ -51,11 +51,13 @@ class ContinuousDataSourceRDD(
     sc: SparkContext,
     dataQueueSize: Int,
     epochPollIntervalMs: Long,
-    private val readerInputPartitions: Seq[InputPartition[UnsafeRow]])
-  extends RDD[UnsafeRow](sc, Nil) {
+    inputSplits: Seq[InputSplit],
+    schema: StructType,
+    splitReaderProvider: SplitReaderProvider)
+  extends RDD[InternalRow](sc, Nil) {
 
   override protected def getPartitions: Array[Partition] = {
-    readerInputPartitions.zipWithIndex.map {
+    inputSplits.zipWithIndex.map {
       case (inputPartition, index) => new ContinuousDataSourceRDDPartition(index, inputPartition)
     }.toArray
   }
@@ -64,24 +66,26 @@ class ContinuousDataSourceRDD(
    * Initialize the shared reader for this partition if needed, then read rows from it until
    * it returns null to signal the end of the epoch.
    */
-  override def compute(split: Partition, context: TaskContext): Iterator[UnsafeRow] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
     // If attempt number isn't 0, this is a task retry, which we don't support.
     if (context.attemptNumber() != 0) {
       throw new ContinuousTaskRetryException()
     }
 
+    val unsafeReaderProvider = new UnsafeSplitReaderProvider(splitReaderProvider, schema)
+
     val readerForPartition = {
       val partition = split.asInstanceOf[ContinuousDataSourceRDDPartition]
       if (partition.queueReader == null) {
-        partition.queueReader =
-          new ContinuousQueuedDataReader(partition, context, dataQueueSize, epochPollIntervalMs)
+        partition.queueReader = new ContinuousQueuedDataReader(
+          partition, unsafeReaderProvider, context, dataQueueSize, epochPollIntervalMs)
       }
 
       partition.queueReader
     }
 
-    new NextIterator[UnsafeRow] {
-      override def getNext(): UnsafeRow = {
+    new NextIterator[InternalRow] {
+      override def getNext(): InternalRow = {
         readerForPartition.next() match {
           case null =>
             finished = true
@@ -95,19 +99,29 @@ class ContinuousDataSourceRDD(
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
-    split.asInstanceOf[ContinuousDataSourceRDDPartition].inputPartition.preferredLocations()
+    split.asInstanceOf[ContinuousDataSourceRDDPartition].inputSplit.preferredLocations()
   }
 }
 
-object ContinuousDataSourceRDD {
-  private[continuous] def getContinuousReader(
-      reader: InputPartitionReader[UnsafeRow]): ContinuousInputPartitionReader[_] = {
-    reader match {
-      case r: ContinuousInputPartitionReader[UnsafeRow] => r
-      case wrapped: RowToUnsafeInputPartitionReader =>
-        wrapped.rowReader.asInstanceOf[ContinuousInputPartitionReader[Row]]
-      case _ =>
-        throw new IllegalStateException(s"Unknown continuous reader type ${reader.getClass}")
-    }
+class UnsafeSplitReaderProvider(readerProvider: SplitReaderProvider, schema: StructType)
+  extends SplitReaderProvider {
+
+  override def createRowReader(split: InputSplit): UnsafeSplitReader = {
+    val projection = UnsafeProjection.create(schema)
+    val splitReader = readerProvider.createRowReader(split)
+      .asInstanceOf[ContinuousInputPartitionReader[InternalRow]]
+    new UnsafeSplitReader(splitReader, projection)
   }
+}
+
+class UnsafeSplitReader(
+    val continuousReader: ContinuousInputPartitionReader[InternalRow],
+    projection: UnsafeProjection)
+  extends InputPartitionReader[InternalRow] {
+
+  override def next: Boolean = continuousReader.next
+
+  override def get: UnsafeRow = projection(continuousReader.get())
+
+  override def close(): Unit = continuousReader.close()
 }

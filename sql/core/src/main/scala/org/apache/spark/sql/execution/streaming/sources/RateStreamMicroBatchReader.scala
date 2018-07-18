@@ -29,6 +29,7 @@ import org.apache.commons.io.IOUtils
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.sources.v2.DataSourceOptions
@@ -108,7 +109,7 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
   private var start: LongOffset = _
   private var end: LongOffset = _
 
-  override def readSchema(): StructType = SCHEMA
+  override def getMetadata(): Metadata = new SchemaOnlyMetadata(SCHEMA)
 
   override def setOffsetRange(start: Optional[Offset], end: Optional[Offset]): Unit = {
     this.start = start.orElse(LongOffset(0L)).asInstanceOf[LongOffset]
@@ -134,43 +135,52 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
     LongOffset(json.toLong)
   }
 
-  override def planInputPartitions(): java.util.List[InputPartition[Row]] = {
-    val startSeconds = LongOffset.convert(start).map(_.offset).getOrElse(0L)
-    val endSeconds = LongOffset.convert(end).map(_.offset).getOrElse(0L)
-    assert(startSeconds <= endSeconds, s"startSeconds($startSeconds) > endSeconds($endSeconds)")
-    if (endSeconds > maxSeconds) {
-      throw new ArithmeticException("Integer overflow. Max offset with " +
-        s"$rowsPerSecond rowsPerSecond is $maxSeconds, but it's $endSeconds now.")
-    }
-    // Fix "lastTimeMs" for recovery
-    if (lastTimeMs < TimeUnit.SECONDS.toMillis(endSeconds) + creationTimeMs) {
-      lastTimeMs = TimeUnit.SECONDS.toMillis(endSeconds) + creationTimeMs
-    }
-    val rangeStart = valueAtSecond(startSeconds, rowsPerSecond, rampUpTimeSeconds)
-    val rangeEnd = valueAtSecond(endSeconds, rowsPerSecond, rampUpTimeSeconds)
-    logDebug(s"startSeconds: $startSeconds, endSeconds: $endSeconds, " +
-      s"rangeStart: $rangeStart, rangeEnd: $rangeEnd")
+  override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+    override def getSplits: Array[InputSplit] = {
+      val startSeconds = LongOffset.convert(start).map(_.offset).getOrElse(0L)
+      val endSeconds = LongOffset.convert(end).map(_.offset).getOrElse(0L)
+      assert(startSeconds <= endSeconds, s"startSeconds($startSeconds) > endSeconds($endSeconds)")
+      if (endSeconds > maxSeconds) {
+        throw new ArithmeticException("Integer overflow. Max offset with " +
+          s"$rowsPerSecond rowsPerSecond is $maxSeconds, but it's $endSeconds now.")
+      }
+      // Fix "lastTimeMs" for recovery
+      if (lastTimeMs < TimeUnit.SECONDS.toMillis(endSeconds) + creationTimeMs) {
+        lastTimeMs = TimeUnit.SECONDS.toMillis(endSeconds) + creationTimeMs
+      }
+      val rangeStart = valueAtSecond(startSeconds, rowsPerSecond, rampUpTimeSeconds)
+      val rangeEnd = valueAtSecond(endSeconds, rowsPerSecond, rampUpTimeSeconds)
+      logDebug(s"startSeconds: $startSeconds, endSeconds: $endSeconds, " +
+        s"rangeStart: $rangeStart, rangeEnd: $rangeEnd")
 
-    if (rangeStart == rangeEnd) {
-      return List.empty.asJava
-    }
+      if (rangeStart == rangeEnd) {
+        return Array.empty
+      }
 
-    val localStartTimeMs = creationTimeMs + TimeUnit.SECONDS.toMillis(startSeconds)
-    val relativeMsPerValue =
-      TimeUnit.SECONDS.toMillis(endSeconds - startSeconds).toDouble / (rangeEnd - rangeStart)
-    val numPartitions = {
-      val activeSession = SparkSession.getActiveSession
-      require(activeSession.isDefined)
-      Option(options.get(NUM_PARTITIONS).orElse(null.asInstanceOf[String]))
-        .map(_.toInt)
-        .getOrElse(activeSession.get.sparkContext.defaultParallelism)
-    }
+      val localStartTimeMs = creationTimeMs + TimeUnit.SECONDS.toMillis(startSeconds)
+      val relativeMsPerValue =
+        TimeUnit.SECONDS.toMillis(endSeconds - startSeconds).toDouble / (rangeEnd - rangeStart)
+      val numPartitions = {
+        val activeSession = SparkSession.getActiveSession
+        require(activeSession.isDefined)
+        Option(options.get(NUM_PARTITIONS).orElse(null.asInstanceOf[String]))
+          .map(_.toInt)
+          .getOrElse(activeSession.get.sparkContext.defaultParallelism)
+      }
 
-    (0 until numPartitions).map { p =>
-      new RateStreamMicroBatchInputPartition(
-        p, numPartitions, rangeStart, rangeEnd, localStartTimeMs, relativeMsPerValue)
-        : InputPartition[Row]
-    }.toList.asJava
+      (0 until numPartitions).map { p =>
+        new RateStreamMicroBatchInputSplit(
+          p, numPartitions, rangeStart, rangeEnd, localStartTimeMs, relativeMsPerValue)
+      }.toArray
+    }
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = new SplitReaderProvider {
+    override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+      val s = split.asInstanceOf[RateStreamMicroBatchInputSplit]
+      new RateStreamMicroBatchInputPartitionReader(s.partitionId, s.numPartitions, s.rangeStart,
+        s.rangeEnd, s.localStartTimeMs, s.relativeMsPerValue)
+    }
   }
 
   override def commit(end: Offset): Unit = {}
@@ -182,18 +192,13 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
     s"numPartitions=${options.get(NUM_PARTITIONS).orElse("default")}"
 }
 
-class RateStreamMicroBatchInputPartition(
+case class RateStreamMicroBatchInputSplit(
     partitionId: Int,
     numPartitions: Int,
     rangeStart: Long,
     rangeEnd: Long,
     localStartTimeMs: Long,
-    relativeMsPerValue: Double) extends InputPartition[Row] {
-
-  override def createPartitionReader(): InputPartitionReader[Row] =
-    new RateStreamMicroBatchInputPartitionReader(partitionId, numPartitions, rangeStart, rangeEnd,
-      localStartTimeMs, relativeMsPerValue)
-}
+    relativeMsPerValue: Double) extends InputSplit
 
 class RateStreamMicroBatchInputPartitionReader(
     partitionId: Int,
@@ -201,22 +206,18 @@ class RateStreamMicroBatchInputPartitionReader(
     rangeStart: Long,
     rangeEnd: Long,
     localStartTimeMs: Long,
-    relativeMsPerValue: Double) extends InputPartitionReader[Row] {
+    relativeMsPerValue: Double) extends InputPartitionReader[InternalRow] {
   private var count: Long = 0
 
   override def next(): Boolean = {
     rangeStart + partitionId + numPartitions * count < rangeEnd
   }
 
-  override def get(): Row = {
+  override def get(): InternalRow = {
     val currValue = rangeStart + partitionId + numPartitions * count
     count += 1
     val relative = math.round((currValue - rangeStart) * relativeMsPerValue)
-    Row(
-      DateTimeUtils.toJavaTimestamp(
-        DateTimeUtils.fromMillis(relative + localStartTimeMs)),
-      currValue
-    )
+    InternalRow(DateTimeUtils.fromMillis(relative + localStartTimeMs), currValue)
   }
 
   override def close(): Unit = {}

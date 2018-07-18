@@ -25,6 +25,7 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.errors.TreeNodeException
 import org.apache.spark.sql.execution.datasources.DataSource
 import org.apache.spark.sql.execution.streaming._
@@ -142,10 +143,11 @@ class RateSourceSuite extends StreamTest {
     val startOffset = LongOffset(0L)
     val endOffset = LongOffset(1L)
     reader.setOffsetRange(Optional.of(startOffset), Optional.of(endOffset))
-    val tasks = reader.planInputPartitions()
-    assert(tasks.size == 1)
-    val dataReader = tasks.get(0).createPartitionReader()
-    val data = ArrayBuffer[Row]()
+    val metadata = reader.getMetadata()
+    val splits = reader.getSplitManager(metadata).getSplits
+    assert(splits.size == 1)
+    val dataReader = reader.getReaderProvider(metadata).createRowReader(splits(0))
+    val data = ArrayBuffer[InternalRow]()
     while (dataReader.next()) {
       data.append(dataReader.get())
     }
@@ -159,18 +161,20 @@ class RateSourceSuite extends StreamTest {
     val startOffset = LongOffset(0L)
     val endOffset = LongOffset(1L)
     reader.setOffsetRange(Optional.of(startOffset), Optional.of(endOffset))
-    val tasks = reader.planInputPartitions()
-    assert(tasks.size == 11)
+    val metadata = reader.getMetadata()
+    val splits = reader.getSplitManager(metadata).getSplits
+    assert(splits.size == 11)
 
-    val readData = tasks.asScala
-      .map(_.createPartitionReader())
+    val readerProvider = reader.getReaderProvider(metadata)
+    val readData = splits
+      .map(readerProvider.createRowReader)
       .flatMap { reader =>
-        val buf = scala.collection.mutable.ListBuffer[Row]()
+        val buf = scala.collection.mutable.ListBuffer[InternalRow]()
         while (reader.next()) buf.append(reader.get())
         buf
       }
 
-    assert(readData.map(_.getLong(1)).sorted == Range(0, 33))
+    assert(readData.map(_.getLong(1)).sorted.toSeq == Range(0, 33))
   }
 
   test("valueAtSecond") {
@@ -304,17 +308,20 @@ class RateSourceSuite extends StreamTest {
     val reader = new RateStreamContinuousReader(
       new DataSourceOptions(Map("numPartitions" -> "2", "rowsPerSecond" -> "20").asJava))
     reader.setStartOffset(Optional.empty())
-    val tasks = reader.planInputPartitions()
-    assert(tasks.size == 2)
+    val metadata = reader.getMetadata()
+    val splits = reader.getSplitManager(metadata).getSplits
+    assert(splits.size == 2)
 
-    val data = scala.collection.mutable.ListBuffer[Row]()
-    tasks.asScala.foreach {
-      case t: RateStreamContinuousInputPartition =>
+    val readerProvider = reader.getReaderProvider(metadata)
+    val data = scala.collection.mutable.ListBuffer[InternalRow]()
+    splits.foreach {
+      case t: RateStreamContinuousInputSplit =>
         val startTimeMs = reader.getStartOffset()
           .asInstanceOf[RateStreamOffset]
           .partitionToValueAndRunTimeMs(t.partitionIndex)
           .runTimeMs
-        val r = t.createPartitionReader().asInstanceOf[RateStreamContinuousInputPartitionReader]
+        val r = readerProvider.createRowReader(t)
+          .asInstanceOf[RateStreamContinuousInputPartitionReader]
         for (rowIndex <- 0 to 9) {
           r.next()
           data.append(r.get())

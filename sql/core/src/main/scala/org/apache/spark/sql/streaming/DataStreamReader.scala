@@ -179,7 +179,7 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
             Optional.ofNullable(userSpecifiedSchema.orNull),
             Utils.createTempDir(namePrefix = s"temporaryReader").getCanonicalPath,
             options)
-          tempReader.readSchema()
+          tempReader.getMetadata.getSchema()
         } finally {
           // Stop tempReader to avoid side-effect thing
           if (tempReader != null) {
@@ -201,7 +201,7 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
           sparkSession,
           StreamingRelationV2(
             s, source, extraOptions.toMap,
-            tempReader.readSchema().toAttributes, v1Relation)(sparkSession))
+            tempReader.getMetadata.getSchema().toAttributes, v1Relation)(sparkSession))
       case _ =>
         // Code path for data source v1.
         Dataset.ofRows(sparkSession, StreamingRelation(v1DataSource))

@@ -29,7 +29,7 @@ import org.apache.spark.sql.sources.Filter;
  * {@link SupportsPushDownCatalystFilters}.
  */
 @InterfaceStability.Evolving
-public interface SupportsPushDownFilters extends DataSourceReader {
+public interface SupportsPushDownFilters extends Metadata {
 
   /**
    * Pushes down filters, and returns filters that need to be evaluated after scanning.

@@ -20,8 +20,8 @@ package test.org.apache.spark.sql.sources.v2;
 import java.io.IOException;
 import java.util.*;
 
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.catalyst.expressions.GenericRow;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.sources.GreaterThan;
 import org.apache.spark.sql.sources.v2.DataSourceOptions;
@@ -32,15 +32,62 @@ import org.apache.spark.sql.types.StructType;
 
 public class JavaAdvancedDataSourceV2 implements DataSourceV2, ReadSupport {
 
-  public class Reader implements DataSourceReader, SupportsPushDownRequiredColumns,
-      SupportsPushDownFilters {
+  public class Reader implements DataSourceReader {
+
+    @Override
+    public Metadata getMetadata() {
+      return new AdvancedMetadata();
+    }
+
+    @Override
+    public SplitManager getSplitManager(Metadata meta) {
+      AdvancedMetadata m = (AdvancedMetadata) meta;
+      return new SplitManager() {
+        @Override
+        public InputSplit[] getSplits() {
+          List<InputSplit> res = new ArrayList<>();
+
+          Integer lowerBound = null;
+          for (Filter filter : m.filters) {
+            if (filter instanceof GreaterThan) {
+              GreaterThan f = (GreaterThan) filter;
+              if ("i".equals(f.attribute()) && f.value() instanceof Integer) {
+                lowerBound = (Integer) f.value();
+                break;
+              }
+            }
+          }
+
+          if (lowerBound == null) {
+            res.add(new JavaRangeInputSplit(0, 5));
+            res.add(new JavaRangeInputSplit(5, 10));
+          } else if (lowerBound < 4) {
+            res.add(new JavaRangeInputSplit(lowerBound + 1, 5));
+            res.add(new JavaRangeInputSplit(5, 10));
+          } else if (lowerBound < 9) {
+            res.add(new JavaRangeInputSplit(lowerBound + 1, 10));
+          }
+
+          return res.stream().toArray(InputSplit[]::new);
+        }
+      };
+    }
+
+    @Override
+    public SplitReaderProvider getReaderProvider(Metadata meta) {
+      return new AdvancedSplitReaderProvider(((AdvancedMetadata) meta).requiredSchema);
+    }
+  }
+
+  public static class AdvancedMetadata implements Metadata,
+    SupportsPushDownRequiredColumns, SupportsPushDownFilters {
 
     // Exposed for testing.
     public StructType requiredSchema = new StructType().add("i", "int").add("j", "int");
     public Filter[] filters = new Filter[0];
 
     @Override
-    public StructType readSchema() {
+    public StructType getSchema() {
       return requiredSchema;
     }
 
@@ -77,78 +124,48 @@ public class JavaAdvancedDataSourceV2 implements DataSourceV2, ReadSupport {
     public Filter[] pushedFilters() {
       return filters;
     }
-
-    @Override
-    public List<InputPartition<Row>> planInputPartitions() {
-      List<InputPartition<Row>> res = new ArrayList<>();
-
-      Integer lowerBound = null;
-      for (Filter filter : filters) {
-        if (filter instanceof GreaterThan) {
-          GreaterThan f = (GreaterThan) filter;
-          if ("i".equals(f.attribute()) && f.value() instanceof Integer) {
-            lowerBound = (Integer) f.value();
-            break;
-          }
-        }
-      }
-
-      if (lowerBound == null) {
-        res.add(new JavaAdvancedInputPartition(0, 5, requiredSchema));
-        res.add(new JavaAdvancedInputPartition(5, 10, requiredSchema));
-      } else if (lowerBound < 4) {
-        res.add(new JavaAdvancedInputPartition(lowerBound + 1, 5, requiredSchema));
-        res.add(new JavaAdvancedInputPartition(5, 10, requiredSchema));
-      } else if (lowerBound < 9) {
-        res.add(new JavaAdvancedInputPartition(lowerBound + 1, 10, requiredSchema));
-      }
-
-      return res;
-    }
   }
 
-  static class JavaAdvancedInputPartition implements InputPartition<Row>,
-      InputPartitionReader<Row> {
-    private int start;
-    private int end;
-    private StructType requiredSchema;
+  static class AdvancedSplitReaderProvider implements SplitReaderProvider {
+    StructType requiredSchema;
 
-    JavaAdvancedInputPartition(int start, int end, StructType requiredSchema) {
-      this.start = start;
-      this.end = end;
+    public AdvancedSplitReaderProvider(StructType requiredSchema) {
       this.requiredSchema = requiredSchema;
     }
 
     @Override
-    public InputPartitionReader<Row> createPartitionReader() {
-      return new JavaAdvancedInputPartition(start - 1, end, requiredSchema);
-    }
+    public InputPartitionReader<InternalRow> createRowReader(InputSplit split) {
+      JavaRangeInputSplit s = (JavaRangeInputSplit) split;
+      return new InputPartitionReader<InternalRow>() {
+        int start = s.start - 1;
+        int end = s.end;
 
-    @Override
-    public boolean next() {
-      start += 1;
-      return start < end;
-    }
-
-    @Override
-    public Row get() {
-      Object[] values = new Object[requiredSchema.size()];
-      for (int i = 0; i < values.length; i++) {
-        if ("i".equals(requiredSchema.apply(i).name())) {
-          values[i] = start;
-        } else if ("j".equals(requiredSchema.apply(i).name())) {
-          values[i] = -start;
+        @Override
+        public boolean next() {
+          start += 1;
+          return start < end;
         }
-      }
-      return new GenericRow(values);
-    }
 
-    @Override
-    public void close() throws IOException {
+        @Override
+        public InternalRow get() {
+          Object[] values = new Object[requiredSchema.size()];
+          for (int i = 0; i < values.length; i++) {
+            if ("i".equals(requiredSchema.apply(i).name())) {
+              values[i] = start;
+            } else if ("j".equals(requiredSchema.apply(i).name())) {
+              values[i] = -start;
+            }
+          }
+          return new GenericInternalRow(values);
+        }
 
+        @Override
+        public void close() throws IOException {
+
+        }
+      };
     }
   }
-
 
   @Override
   public DataSourceReader createReader(DataSourceOptions options) {

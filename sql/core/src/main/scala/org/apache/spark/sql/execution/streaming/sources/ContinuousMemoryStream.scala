@@ -32,10 +32,11 @@ import org.json4s.jackson.Serialization
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.sql.{Encoder, Row, SQLContext}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.sources.ContinuousMemoryStream.GetRecord
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceOptions}
-import org.apache.spark.sql.sources.v2.reader.InputPartition
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousInputPartitionReader, ContinuousReader, Offset, PartitionOffset}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.RpcUtils
@@ -50,6 +51,7 @@ import org.apache.spark.util.RpcUtils
  */
 class ContinuousMemoryStream[A : Encoder](id: Int, sqlContext: SQLContext, numPartitions: Int = 2)
   extends MemoryStreamBase[A](sqlContext) with ContinuousReader with ContinuousReadSupport {
+
   private implicit val formats = Serialization.formats(NoTypeHints)
 
   protected val logicalPlan =
@@ -99,17 +101,23 @@ class ContinuousMemoryStream[A : Encoder](id: Int, sqlContext: SQLContext, numPa
     )
   }
 
-  override def planInputPartitions(): ju.List[InputPartition[Row]] = {
-    synchronized {
+  override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+    override def getSplits: Array[InputSplit] = ContinuousMemoryStream.this.synchronized {
       val endpointName = s"ContinuousMemoryStreamRecordEndpoint-${java.util.UUID.randomUUID()}-$id"
       endpointRef =
         recordEndpoint.rpcEnv.setupEndpoint(endpointName, recordEndpoint)
 
       startOffset.partitionNums.map {
-        case (part, index) =>
-          new ContinuousMemoryStreamInputPartition(
-            endpointName, part, index): InputPartition[Row]
-      }.toList.asJava
+        case (part, index) => ContinuousMemoryStreamInputSplit(endpointName, part, index)
+      }.toArray
+    }
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = new SplitReaderProvider {
+    override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+      val s = split.asInstanceOf[ContinuousMemoryStreamInputSplit]
+      new ContinuousMemoryStreamInputPartitionReader(
+        s.driverEndpointName, s.partition, s.startOffset)
     }
   }
 
@@ -140,7 +148,7 @@ class ContinuousMemoryStream[A : Encoder](id: Int, sqlContext: SQLContext, numPa
           val buf = records(part)
           val record = if (buf.size <= index) None else Some(buf(index))
 
-          context.reply(record.map(Row(_)))
+          context.reply(record.map(r => encoder.toRow(r).copy()))
         }
     }
   }
@@ -157,16 +165,10 @@ object ContinuousMemoryStream {
     new ContinuousMemoryStream[A](memoryStreamId.getAndIncrement(), sqlContext, 1)
 }
 
-/**
- * An input partition for continuous memory stream.
- */
-class ContinuousMemoryStreamInputPartition(
+case class ContinuousMemoryStreamInputSplit(
     driverEndpointName: String,
     partition: Int,
-    startOffset: Int) extends InputPartition[Row] {
-  override def createPartitionReader: ContinuousMemoryStreamInputPartitionReader =
-    new ContinuousMemoryStreamInputPartitionReader(driverEndpointName, partition, startOffset)
-}
+    startOffset: Int) extends InputSplit
 
 /**
  * An input partition reader for continuous memory stream.
@@ -176,14 +178,14 @@ class ContinuousMemoryStreamInputPartition(
 class ContinuousMemoryStreamInputPartitionReader(
     driverEndpointName: String,
     partition: Int,
-    startOffset: Int) extends ContinuousInputPartitionReader[Row] {
+    startOffset: Int) extends ContinuousInputPartitionReader[InternalRow] {
   private val endpoint = RpcUtils.makeDriverRef(
     driverEndpointName,
     SparkEnv.get.conf,
     SparkEnv.get.rpcEnv)
 
   private var currentOffset = startOffset
-  private var current: Option[Row] = None
+  private var current: Option[InternalRow] = None
 
   // Defense-in-depth against failing to propagate the task context. Since it's not inheritable,
   // we have to do a bit of error prone work to get it into every thread used by continuous
@@ -203,15 +205,15 @@ class ContinuousMemoryStreamInputPartitionReader(
     true
   }
 
-  override def get(): Row = current.get
+  override def get(): InternalRow = current.get
 
   override def close(): Unit = {}
 
   override def getOffset: ContinuousMemoryStreamPartitionOffset =
     ContinuousMemoryStreamPartitionOffset(partition, currentOffset)
 
-  private def getRecord: Option[Row] =
-    endpoint.askSync[Option[Row]](
+  private def getRecord: Option[InternalRow] =
+    endpoint.askSync[Option[InternalRow]](
       GetRecord(ContinuousMemoryStreamPartitionOffset(partition, currentOffset)))
 }
 

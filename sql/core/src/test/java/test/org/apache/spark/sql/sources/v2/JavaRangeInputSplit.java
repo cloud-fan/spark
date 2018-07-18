@@ -15,23 +15,16 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.sources.v2.reader;
+package test.org.apache.spark.sql.sources.v2;
 
-import org.apache.spark.annotation.InterfaceStability;
+import org.apache.spark.sql.sources.v2.reader.InputSplit;
 
-/**
- * A mix in interface for {@link DataSourceReader}. Data source readers can implement this
- * interface to report statistics to Spark.
- *
- * Statistics are reported to the optimizer before any operator is pushed to the DataSourceReader.
- * Implementations that return more accurate statistics based on pushed operators will not improve
- * query performance until the planner can push operators before getting stats.
- */
-@InterfaceStability.Evolving
-public interface SupportsReportStatistics extends DataSourceReader {
+class JavaRangeInputSplit implements InputSplit {
+  int start;
+  int end;
 
-  /**
-   * Returns the basic statistics of this data source.
-   */
-  Statistics getStatistics(Metadata meta);
+  public JavaRangeInputSplit(int start, int end) {
+    this.start = start;
+    this.end = end;
+  }
 }

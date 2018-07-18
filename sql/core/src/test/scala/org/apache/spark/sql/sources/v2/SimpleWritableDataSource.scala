@@ -28,7 +28,7 @@ import org.apache.hadoop.fs.{FileSystem, FSDataInputStream, Path}
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Row, SaveMode}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.sources.v2.reader.{DataSourceReader, InputPartition, InputPartitionReader}
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.writer._
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.util.SerializableConfiguration
@@ -43,23 +43,34 @@ class SimpleWritableDataSource extends DataSourceV2 with ReadSupport with WriteS
   private val schema = new StructType().add("i", "long").add("j", "long")
 
   class Reader(path: String, conf: Configuration) extends DataSourceReader {
-    override def readSchema(): StructType = schema
+    override def getMetadata: Metadata = new SchemaOnlyMetadata(schema)
 
-    override def planInputPartitions(): JList[InputPartition[Row]] = {
-      val dataPath = new Path(path)
-      val fs = dataPath.getFileSystem(conf)
-      if (fs.exists(dataPath)) {
-        fs.listStatus(dataPath).filterNot { status =>
-          val name = status.getPath.getName
-          name.startsWith("_") || name.startsWith(".")
-        }.map { f =>
-          val serializableConf = new SerializableConfiguration(conf)
-          new SimpleCSVInputPartitionReader(
-            f.getPath.toUri.toString,
-            serializableConf): InputPartition[Row]
-        }.toList.asJava
-      } else {
-        Collections.emptyList()
+    override def getSplitManager(meta: Metadata): SplitManager = {
+      new SplitManager {
+        override def getSplits: Array[InputSplit] = {
+          val dataPath = new Path(path)
+          val fs = dataPath.getFileSystem(conf)
+          if (fs.exists(dataPath)) {
+            fs.listStatus(dataPath).filterNot { status =>
+              val name = status.getPath.getName
+              name.startsWith("_") || name.startsWith(".")
+            }.map { f =>
+              new SimpleCSVInputSplit(f.getPath.toUri.toString)
+            }.toArray
+          } else {
+            Array.empty
+          }
+        }
+      }
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      val serializableConf = new SerializableConfiguration(conf)
+      new SplitReaderProvider {
+        override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+          val s = split.asInstanceOf[SimpleCSVInputSplit]
+          new SimpleCSVInputPartitionReader(s.path, serializableConf)
+        }
       }
     }
   }
@@ -156,21 +167,18 @@ class SimpleWritableDataSource extends DataSourceV2 with ReadSupport with WriteS
   }
 }
 
+case class SimpleCSVInputSplit(path: String) extends InputSplit
+
 class SimpleCSVInputPartitionReader(path: String, conf: SerializableConfiguration)
-  extends InputPartition[Row] with InputPartitionReader[Row] {
+  extends InputPartitionReader[InternalRow] {
 
-  @transient private var lines: Iterator[String] = _
-  @transient private var currentLine: String = _
-  @transient private var inputStream: FSDataInputStream = _
+  private val filePath = new Path(path)
+  private val fs = filePath.getFileSystem(conf.value)
+  private val inputStream = fs.open(filePath)
+  private val lines =
+    new BufferedReader(new InputStreamReader(inputStream)).lines().iterator().asScala
 
-  override def createPartitionReader(): InputPartitionReader[Row] = {
-    val filePath = new Path(path)
-    val fs = filePath.getFileSystem(conf.value)
-    inputStream = fs.open(filePath)
-    lines = new BufferedReader(new InputStreamReader(inputStream))
-      .lines().iterator().asScala
-    this
-  }
+  private var currentLine: String = _
 
   override def next(): Boolean = {
     if (lines.hasNext) {
@@ -181,7 +189,7 @@ class SimpleCSVInputPartitionReader(path: String, conf: SerializableConfiguratio
     }
   }
 
-  override def get(): Row = Row(currentLine.split(",").map(_.trim.toLong): _*)
+  override def get(): InternalRow = InternalRow(currentLine.split(",").map(_.trim.toLong): _*)
 
   override def close(): Unit = {
     inputStream.close()

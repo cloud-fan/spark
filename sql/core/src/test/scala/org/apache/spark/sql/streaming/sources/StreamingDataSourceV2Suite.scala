@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.streaming.continuous.ContinuousTrigger
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{DataSourceRegister, StreamSinkProvider}
 import org.apache.spark.sql.sources.v2.{ContinuousReadSupport, DataSourceOptions, MicroBatchReadSupport, StreamWriteSupport}
-import org.apache.spark.sql.sources.v2.reader.InputPartition
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousReader, MicroBatchReader, Offset, PartitionOffset}
 import org.apache.spark.sql.sources.v2.writer.streaming.StreamWriter
 import org.apache.spark.sql.streaming.{OutputMode, StreamTest, Trigger}
@@ -39,12 +39,17 @@ case class FakeReader() extends MicroBatchReader with ContinuousReader {
   def getEndOffset: Offset = RateStreamOffset(Map())
   def deserializeOffset(json: String): Offset = RateStreamOffset(Map())
   def commit(end: Offset): Unit = {}
-  def readSchema(): StructType = StructType(Seq())
   def stop(): Unit = {}
   def mergeOffsets(offsets: Array[PartitionOffset]): Offset = RateStreamOffset(Map())
   def setStartOffset(start: Optional[Offset]): Unit = {}
 
-  def planInputPartitions(): java.util.ArrayList[InputPartition[Row]] = {
+  override def getMetadata: Metadata = new SchemaOnlyMetadata(StructType(Seq()))
+
+  override def getSplitManager(meta: Metadata): SplitManager = {
+    throw new IllegalStateException("fake source - cannot actually read")
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
     throw new IllegalStateException("fake source - cannot actually read")
   }
 }

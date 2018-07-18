@@ -55,26 +55,9 @@ import org.apache.spark.sql.types.StructType;
 @InterfaceStability.Evolving
 public interface DataSourceReader {
 
-  /**
-   * Returns the actual schema of this data source reader, which may be different from the physical
-   * schema of the underlying storage, as column pruning or other optimizations may happen.
-   *
-   * If this method fails (by throwing an exception), the action will fail and no Spark job will be
-   * submitted.
-   */
-  StructType readSchema();
+  Metadata getMetadata();
 
-  /**
-   * Returns a list of {@link InputPartition}s. Each {@link InputPartition} is responsible for
-   * creating a data reader to output data of one RDD partition. The number of input partitions
-   * returned here is the same as the number of RDD partitions this scan outputs.
-   *
-   * Note that, this may not be a full scan if the data source reader mixes in other optimization
-   * interfaces like column pruning, filter push-down, etc. These optimizations are applied before
-   * Spark issues the scan request.
-   *
-   * If this method fails (by throwing an exception), the action will fail and no Spark job will be
-   * submitted.
-   */
-  List<InputPartition<Row>> planInputPartitions();
+  SplitManager getSplitManager(Metadata meta);
+
+  SplitReaderProvider getReaderProvider(Metadata meta);
 }

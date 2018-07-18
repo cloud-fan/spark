@@ -457,7 +457,7 @@ class MicroBatchExecution(
             })
           }
           Some(reader -> StreamingDataSourceV2Relation(
-            reader.readSchema().toAttributes, source, options, reader))
+            reader.getMetadata().getSchema.toAttributes, source, options, reader))
         case _ => None
       }
     }

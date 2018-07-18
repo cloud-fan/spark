@@ -28,12 +28,13 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.encoderFor
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeRow}
 import org.apache.spark.sql.catalyst.plans.logical.{LeafNode, LogicalPlan, Statistics}
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
 import org.apache.spark.sql.catalyst.streaming.InternalOutputModes._
-import org.apache.spark.sql.sources.v2.reader.{InputPartition, InputPartitionReader, SupportsScanUnsafeRow}
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchReader, Offset => OffsetV2}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
@@ -51,7 +52,7 @@ object MemoryStream {
  * A base class for memory stream implementations. Supports adding data and resetting.
  */
 abstract class MemoryStreamBase[A : Encoder](sqlContext: SQLContext) extends BaseStreamingSource {
-  protected val encoder = encoderFor[A]
+  val encoder = encoderFor[A]
   protected val attributes = encoder.schema.toAttributes
 
   def toDS(): Dataset[A] = {
@@ -66,7 +67,7 @@ abstract class MemoryStreamBase[A : Encoder](sqlContext: SQLContext) extends Bas
     addData(data.toTraversable)
   }
 
-  def readSchema(): StructType = encoder.schema
+  def getMetadata(): Metadata = new SchemaOnlyMetadata(encoder.schema)
 
   protected def logicalPlan: LogicalPlan
 
@@ -80,7 +81,7 @@ abstract class MemoryStreamBase[A : Encoder](sqlContext: SQLContext) extends Bas
  */
 case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
     extends MemoryStreamBase[A](sqlContext)
-      with MicroBatchReader with SupportsScanUnsafeRow with Logging {
+      with MicroBatchReader with Logging {
 
   protected val logicalPlan: LogicalPlan =
     StreamingExecutionRelation(this, attributes)(sqlContext.sparkSession)
@@ -139,8 +140,9 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
     if (endOffset.offset == -1) null else endOffset
   }
 
-  override def planUnsafeInputPartitions(): ju.List[InputPartition[UnsafeRow]] = {
-    synchronized {
+  // create a class here so that in the test we can overwrite `getSplits`.
+  class MemoryStreamSplitManager extends SplitManager with Logging {
+    override def getSplits: Array[InputSplit] = MemoryStream.this.synchronized {
       // Compute the internal batch numbers to fetch: [startOrdinal, endOrdinal)
       val startOrdinal = startOffset.offset.toInt + 1
       val endOrdinal = endOffset.offset.toInt + 1
@@ -155,11 +157,11 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
 
       logDebug(generateDebugString(newBlocks.flatten, startOrdinal, endOrdinal))
 
-      newBlocks.map { block =>
-        new MemoryStreamInputPartition(block).asInstanceOf[InputPartition[UnsafeRow]]
-      }.asJava
+      newBlocks.map(MemoryStreamInputSplit).toArray
     }
   }
+
+  override def getSplitManager(meta: Metadata): SplitManager = new MemoryStreamSplitManager
 
   private def generateDebugString(
       rows: Seq[UnsafeRow],
@@ -168,6 +170,10 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
     val fromRow = encoder.resolveAndBind().fromRow _
     s"MemoryBatch [$startOrdinal, $endOrdinal]: " +
         s"${rows.map(row => fromRow(row)).mkString(", ")}"
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+    MemoryStreamSplitReaderProvider
   }
 
   override def commit(end: OffsetV2): Unit = synchronized {
@@ -200,11 +206,12 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
   }
 }
 
+case class MemoryStreamInputSplit(records: Array[UnsafeRow]) extends InputSplit
 
-class MemoryStreamInputPartition(records: Array[UnsafeRow])
-  extends InputPartition[UnsafeRow] {
-  override def createPartitionReader(): InputPartitionReader[UnsafeRow] = {
-    new InputPartitionReader[UnsafeRow] {
+object MemoryStreamSplitReaderProvider extends SplitReaderProvider {
+  override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+    new InputPartitionReader[InternalRow] {
+      private val records = split.asInstanceOf[MemoryStreamInputSplit].records
       private var currentIndex = -1
 
       override def next(): Boolean = {
@@ -213,7 +220,7 @@ class MemoryStreamInputPartition(records: Array[UnsafeRow])
         currentIndex < records.length
       }
 
-      override def get(): UnsafeRow = records(currentIndex)
+      override def get(): InternalRow = records(currentIndex)
 
       override def close(): Unit = {}
     }

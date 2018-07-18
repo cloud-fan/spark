@@ -33,5 +33,5 @@ public interface SupportsReportPartitioning extends DataSourceReader {
   /**
    * Returns the output data partitioning that this reader guarantees.
    */
-  Partitioning outputPartitioning();
+  Partitioning outputPartitioning(Metadata meta);
 }

@@ -23,6 +23,7 @@ import org.json4s.DefaultFormats
 import org.json4s.jackson.Serialization
 
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming.{RateStreamOffset, ValueRunTimeMsPair}
 import org.apache.spark.sql.execution.streaming.sources.RateStreamProvider
@@ -57,7 +58,7 @@ class RateStreamContinuousReader(options: DataSourceOptions)
     RateStreamOffset(Serialization.read[Map[Int, ValueRunTimeMsPair]](json))
   }
 
-  override def readSchema(): StructType = RateStreamProvider.SCHEMA
+  override def getMetadata: Metadata = new SchemaOnlyMetadata(RateStreamProvider.SCHEMA)
 
   private var offset: Offset = _
 
@@ -67,32 +68,41 @@ class RateStreamContinuousReader(options: DataSourceOptions)
 
   override def getStartOffset(): Offset = offset
 
-  override def planInputPartitions(): java.util.List[InputPartition[Row]] = {
-    val partitionStartMap = offset match {
-      case off: RateStreamOffset => off.partitionToValueAndRunTimeMs
-      case off =>
+  override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+    override def getSplits: Array[InputSplit] = {
+      val partitionStartMap = offset match {
+        case off: RateStreamOffset => off.partitionToValueAndRunTimeMs
+        case off =>
+          throw new IllegalArgumentException(
+            s"invalid offset type ${off.getClass()} for ContinuousRateSource")
+      }
+      if (partitionStartMap.keySet.size != numPartitions) {
         throw new IllegalArgumentException(
-          s"invalid offset type ${off.getClass()} for ContinuousRateSource")
-    }
-    if (partitionStartMap.keySet.size != numPartitions) {
-      throw new IllegalArgumentException(
-        s"The previous run contained ${partitionStartMap.keySet.size} partitions, but" +
-        s" $numPartitions partitions are currently configured. The numPartitions option" +
-        " cannot be changed.")
-    }
+          s"The previous run contained ${partitionStartMap.keySet.size} partitions, but" +
+            s" $numPartitions partitions are currently configured. The numPartitions option" +
+            " cannot be changed.")
+      }
 
-    Range(0, numPartitions).map { i =>
-      val start = partitionStartMap(i)
-      // Have each partition advance by numPartitions each row, with starting points staggered
-      // by their partition index.
-      RateStreamContinuousInputPartition(
-        start.value,
-        start.runTimeMs,
-        i,
-        numPartitions,
-        perPartitionRate)
-        .asInstanceOf[InputPartition[Row]]
-    }.asJava
+      Range(0, numPartitions).map { i =>
+        val start = partitionStartMap(i)
+        // Have each partition advance by numPartitions each row, with starting points staggered
+        // by their partition index.
+        RateStreamContinuousInputSplit(
+          start.value,
+          start.runTimeMs,
+          i,
+          numPartitions,
+          perPartitionRate)
+      }.toArray
+    }
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = new SplitReaderProvider {
+    override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+      val s = split.asInstanceOf[RateStreamContinuousInputSplit]
+      new RateStreamContinuousInputPartitionReader(
+        s.startValue, s.startTimeMs, s.partitionIndex, s.increment, s.rowsPerSecond)
+    }
   }
 
   override def commit(end: Offset): Unit = {}
@@ -113,30 +123,12 @@ class RateStreamContinuousReader(options: DataSourceOptions)
 
 }
 
-case class RateStreamContinuousInputPartition(
+case class RateStreamContinuousInputSplit(
     startValue: Long,
     startTimeMs: Long,
     partitionIndex: Int,
     increment: Long,
-    rowsPerSecond: Double)
-  extends ContinuousInputPartition[Row] {
-
-  override def createContinuousReader(offset: PartitionOffset): InputPartitionReader[Row] = {
-    val rateStreamOffset = offset.asInstanceOf[RateStreamPartitionOffset]
-    require(rateStreamOffset.partition == partitionIndex,
-      s"Expected partitionIndex: $partitionIndex, but got: ${rateStreamOffset.partition}")
-    new RateStreamContinuousInputPartitionReader(
-      rateStreamOffset.currentValue,
-      rateStreamOffset.currentTimeMs,
-      partitionIndex,
-      increment,
-      rowsPerSecond)
-  }
-
-  override def createPartitionReader(): InputPartitionReader[Row] =
-    new RateStreamContinuousInputPartitionReader(
-      startValue, startTimeMs, partitionIndex, increment, rowsPerSecond)
-}
+    rowsPerSecond: Double) extends InputSplit
 
 class RateStreamContinuousInputPartitionReader(
     startValue: Long,
@@ -144,12 +136,12 @@ class RateStreamContinuousInputPartitionReader(
     partitionIndex: Int,
     increment: Long,
     rowsPerSecond: Double)
-  extends ContinuousInputPartitionReader[Row] {
+  extends ContinuousInputPartitionReader[InternalRow] {
   private var nextReadTime: Long = startTimeMs
   private val readTimeIncrement: Long = (1000 / rowsPerSecond).toLong
 
   private var currentValue = startValue
-  private var currentRow: Row = null
+  private var currentRow: InternalRow = null
 
   override def next(): Boolean = {
     currentValue += increment
@@ -165,14 +157,14 @@ class RateStreamContinuousInputPartitionReader(
         return false
     }
 
-    currentRow = Row(
-      DateTimeUtils.toJavaTimestamp(DateTimeUtils.fromMillis(nextReadTime)),
+    currentRow = InternalRow(
+      DateTimeUtils.fromMillis(nextReadTime),
       currentValue)
 
     true
   }
 
-  override def get: Row = currentRow
+  override def get: InternalRow = currentRow
 
   override def close(): Unit = {}
 

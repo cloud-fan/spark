@@ -17,32 +17,37 @@
 
 package org.apache.spark.sql.execution.datasources.v2
 
-import scala.collection.JavaConverters._
-import scala.reflect.ClassTag
-
 import org.apache.spark.{InterruptibleIterator, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.sources.v2.reader.InputPartition
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.sources.v2.reader.{InputPartitionReader, InputSplit, SplitReaderProvider}
 
-class DataSourceRDDPartition[T : ClassTag](val index: Int, val inputPartition: InputPartition[T])
+class DataSourceRDDPartition(val index: Int, val inputSplit: InputSplit)
   extends Partition with Serializable
 
-class DataSourceRDD[T: ClassTag](
+// TODO: we should have 2 RDDs: an RDD[InternalRow] for row-based scan, an `RDD[ColumnarBatch]` for
+// columnar scan.
+class DataSourceRDD(
     sc: SparkContext,
-    @transient private val inputPartitions: Seq[InputPartition[T]])
-  extends RDD[T](sc, Nil) {
+    @transient private val inputSplits: Seq[InputSplit],
+    splitReaderProvider: SplitReaderProvider)
+  extends RDD[InternalRow](sc, Nil) {
 
   override protected def getPartitions: Array[Partition] = {
-    inputPartitions.zipWithIndex.map {
-      case (inputPartition, index) => new DataSourceRDDPartition(index, inputPartition)
+    inputSplits.zipWithIndex.map {
+      case (split, index) => new DataSourceRDDPartition(index, split)
     }.toArray
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[T] = {
-    val reader = split.asInstanceOf[DataSourceRDDPartition[T]].inputPartition
-        .createPartitionReader()
+  override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
+    val inputSplit = split.asInstanceOf[DataSourceRDDPartition].inputSplit
+    val reader: InputPartitionReader[_] = if (splitReaderProvider.supportColumnarReader()) {
+      splitReaderProvider.createColumnarReader(inputSplit)
+    } else {
+      splitReaderProvider.createRowReader(inputSplit)
+    }
     context.addTaskCompletionListener(_ => reader.close())
-    val iter = new Iterator[T] {
+    val iter = new Iterator[Any] {
       private[this] var valuePrepared = false
 
       override def hasNext: Boolean = {
@@ -52,7 +57,7 @@ class DataSourceRDD[T: ClassTag](
         valuePrepared
       }
 
-      override def next(): T = {
+      override def next(): Any = {
         if (!hasNext) {
           throw new java.util.NoSuchElementException("End of stream")
         }
@@ -60,10 +65,11 @@ class DataSourceRDD[T: ClassTag](
         reader.get()
       }
     }
-    new InterruptibleIterator(context, iter)
+    // TODO: get rid of this type hack.
+    new InterruptibleIterator(context, iter.asInstanceOf[Iterator[InternalRow]])
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
-    split.asInstanceOf[DataSourceRDDPartition[T]].inputPartition.preferredLocations()
+    split.asInstanceOf[DataSourceRDDPartition].inputSplit.preferredLocations()
   }
 }

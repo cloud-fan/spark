@@ -17,21 +17,21 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
-import org.apache.spark.annotation.InterfaceStability;
+import java.io.Serializable;
 
-/**
- * A mix in interface for {@link DataSourceReader}. Data source readers can implement this
- * interface to report statistics to Spark.
- *
- * Statistics are reported to the optimizer before any operator is pushed to the DataSourceReader.
- * Implementations that return more accurate statistics based on pushed operators will not improve
- * query performance until the planner can push operators before getting stats.
- */
-@InterfaceStability.Evolving
-public interface SupportsReportStatistics extends DataSourceReader {
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.vectorized.ColumnarBatch;
 
-  /**
-   * Returns the basic statistics of this data source.
-   */
-  Statistics getStatistics(Metadata meta);
+public interface SplitReaderProvider extends Serializable {
+  default InputPartitionReader<InternalRow> createRowReader(InputSplit split) {
+    throw new IllegalStateException("createRowReader is not implemented.");
+  }
+
+  default InputPartitionReader<ColumnarBatch> createColumnarReader(InputSplit split) {
+    throw new IllegalStateException("createColumnarReader is not implemented.");
+  }
+
+  default boolean supportColumnarReader() {
+    return false;
+  }
 }

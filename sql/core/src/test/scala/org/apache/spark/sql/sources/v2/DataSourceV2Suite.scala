@@ -17,13 +17,11 @@
 
 package org.apache.spark.sql.sources.v2
 
-import java.util.{ArrayList, List => JList}
-
-import test.org.apache.spark.sql.sources.v2._
+import test.org.apache.spark.sql.sources.v2.{JavaAdvancedDataSourceV2, _}
 
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
@@ -38,6 +36,20 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 class DataSourceV2Suite extends QueryTest with SharedSQLContext {
   import testImplicits._
 
+  private def getMetadata(query: DataFrame): AdvancedMetadata = {
+    query.queryExecution.executedPlan.collect {
+      case d: DataSourceV2ScanExec =>
+        d.metadata.asInstanceOf[AdvancedMetadata]
+    }.head
+  }
+
+  private def getJavaMetadata(query: DataFrame): JavaAdvancedDataSourceV2.AdvancedMetadata = {
+    query.queryExecution.executedPlan.collect {
+      case d: DataSourceV2ScanExec =>
+        d.metadata.asInstanceOf[JavaAdvancedDataSourceV2.AdvancedMetadata]
+    }.head
+  }
+
   test("simplest implementation") {
     Seq(classOf[SimpleDataSourceV2], classOf[JavaSimpleDataSourceV2]).foreach { cls =>
       withClue(cls.getName) {
@@ -50,18 +62,6 @@ class DataSourceV2Suite extends QueryTest with SharedSQLContext {
   }
 
   test("advanced implementation") {
-    def getReader(query: DataFrame): AdvancedDataSourceV2#Reader = {
-      query.queryExecution.executedPlan.collect {
-        case d: DataSourceV2ScanExec => d.reader.asInstanceOf[AdvancedDataSourceV2#Reader]
-      }.head
-    }
-
-    def getJavaReader(query: DataFrame): JavaAdvancedDataSourceV2#Reader = {
-      query.queryExecution.executedPlan.collect {
-        case d: DataSourceV2ScanExec => d.reader.asInstanceOf[JavaAdvancedDataSourceV2#Reader]
-      }.head
-    }
-
     Seq(classOf[AdvancedDataSourceV2], classOf[JavaAdvancedDataSourceV2]).foreach { cls =>
       withClue(cls.getName) {
         val df = spark.read.format(cls.getName).load()
@@ -70,63 +70,52 @@ class DataSourceV2Suite extends QueryTest with SharedSQLContext {
         val q1 = df.select('j)
         checkAnswer(q1, (0 until 10).map(i => Row(-i)))
         if (cls == classOf[AdvancedDataSourceV2]) {
-          val reader = getReader(q1)
-          assert(reader.filters.isEmpty)
-          assert(reader.requiredSchema.fieldNames === Seq("j"))
+          val metadata = getMetadata(q1)
+          assert(metadata.filters.isEmpty)
+          assert(metadata.requiredSchema.fieldNames === Seq("j"))
         } else {
-          val reader = getJavaReader(q1)
-          assert(reader.filters.isEmpty)
-          assert(reader.requiredSchema.fieldNames === Seq("j"))
+          val metadata = getJavaMetadata(q1)
+          assert(metadata.filters.isEmpty)
+          assert(metadata.requiredSchema.fieldNames === Seq("j"))
         }
 
         val q2 = df.filter('i > 3)
         checkAnswer(q2, (4 until 10).map(i => Row(i, -i)))
         if (cls == classOf[AdvancedDataSourceV2]) {
-          val reader = getReader(q2)
-          assert(reader.filters.flatMap(_.references).toSet == Set("i"))
-          assert(reader.requiredSchema.fieldNames === Seq("i", "j"))
+          val metadata = getMetadata(q2)
+          assert(metadata.filters.flatMap(_.references).toSet == Set("i"))
+          assert(metadata.requiredSchema.fieldNames === Seq("i", "j"))
         } else {
-          val reader = getJavaReader(q2)
-          assert(reader.filters.flatMap(_.references).toSet == Set("i"))
-          assert(reader.requiredSchema.fieldNames === Seq("i", "j"))
+          val metadata = getJavaMetadata(q2)
+          assert(metadata.filters.flatMap(_.references).toSet == Set("i"))
+          assert(metadata.requiredSchema.fieldNames === Seq("i", "j"))
         }
 
         val q3 = df.select('i).filter('i > 6)
         checkAnswer(q3, (7 until 10).map(i => Row(i)))
         if (cls == classOf[AdvancedDataSourceV2]) {
-          val reader = getReader(q3)
-          assert(reader.filters.flatMap(_.references).toSet == Set("i"))
-          assert(reader.requiredSchema.fieldNames === Seq("i"))
+          val metadata = getMetadata(q3)
+          assert(metadata.filters.flatMap(_.references).toSet == Set("i"))
+          assert(metadata.requiredSchema.fieldNames === Seq("i"))
         } else {
-          val reader = getJavaReader(q3)
-          assert(reader.filters.flatMap(_.references).toSet == Set("i"))
-          assert(reader.requiredSchema.fieldNames === Seq("i"))
+          val metadata = getJavaMetadata(q3)
+          assert(metadata.filters.flatMap(_.references).toSet == Set("i"))
+          assert(metadata.requiredSchema.fieldNames === Seq("i"))
         }
 
         val q4 = df.select('j).filter('j < -10)
         checkAnswer(q4, Nil)
         if (cls == classOf[AdvancedDataSourceV2]) {
-          val reader = getReader(q4)
+          val metadata = getMetadata(q4)
           // 'j < 10 is not supported by the testing data source.
-          assert(reader.filters.isEmpty)
-          assert(reader.requiredSchema.fieldNames === Seq("j"))
+          assert(metadata.filters.isEmpty)
+          assert(metadata.requiredSchema.fieldNames === Seq("j"))
         } else {
-          val reader = getJavaReader(q4)
+          val metadata = getJavaMetadata(q4)
           // 'j < 10 is not supported by the testing data source.
-          assert(reader.filters.isEmpty)
-          assert(reader.requiredSchema.fieldNames === Seq("j"))
+          assert(metadata.filters.isEmpty)
+          assert(metadata.requiredSchema.fieldNames === Seq("j"))
         }
-      }
-    }
-  }
-
-  test("unsafe row scan implementation") {
-    Seq(classOf[UnsafeRowDataSourceV2], classOf[JavaUnsafeRowDataSourceV2]).foreach { cls =>
-      withClue(cls.getName) {
-        val df = spark.read.format(cls.getName).load()
-        checkAnswer(df, (0 until 10).map(i => Row(i, -i)))
-        checkAnswer(df.select('j), (0 until 10).map(i => Row(-i)))
-        checkAnswer(df.filter('i > 5), (6 until 10).map(i => Row(i, -i)))
       }
     }
   }
@@ -290,36 +279,30 @@ class DataSourceV2Suite extends QueryTest with SharedSQLContext {
   }
 
   test("SPARK-23301: column pruning with arbitrary expressions") {
-    def getReader(query: DataFrame): AdvancedDataSourceV2#Reader = {
-      query.queryExecution.executedPlan.collect {
-        case d: DataSourceV2ScanExec => d.reader.asInstanceOf[AdvancedDataSourceV2#Reader]
-      }.head
-    }
-
     val df = spark.read.format(classOf[AdvancedDataSourceV2].getName).load()
 
     val q1 = df.select('i + 1)
     checkAnswer(q1, (1 until 11).map(i => Row(i)))
-    val reader1 = getReader(q1)
-    assert(reader1.requiredSchema.fieldNames === Seq("i"))
+    val metadata1 = getMetadata(q1)
+    assert(metadata1.requiredSchema.fieldNames === Seq("i"))
 
     val q2 = df.select(lit(1))
     checkAnswer(q2, (0 until 10).map(i => Row(1)))
-    val reader2 = getReader(q2)
-    assert(reader2.requiredSchema.isEmpty)
+    val metadata2 = getMetadata(q2)
+    assert(metadata2.requiredSchema.isEmpty)
 
     // 'j === 1 can't be pushed down, but we should still be able do column pruning
     val q3 = df.filter('j === -1).select('j * 2)
     checkAnswer(q3, Row(-2))
-    val reader3 = getReader(q3)
-    assert(reader3.filters.isEmpty)
-    assert(reader3.requiredSchema.fieldNames === Seq("j"))
+    val metadata3 = getMetadata(q3)
+    assert(metadata3.filters.isEmpty)
+    assert(metadata3.requiredSchema.fieldNames === Seq("j"))
 
     // column pruning should work with other operators.
     val q4 = df.sort('i).limit(1).select('i + 1)
     checkAnswer(q4, Row(1))
-    val reader4 = getReader(q4)
-    assert(reader4.requiredSchema.fieldNames === Seq("i"))
+    val metadata4 = getMetadata(q4)
+    assert(metadata4.requiredSchema.fieldNames === Seq("i"))
   }
 
   test("SPARK-23315: get output from canonicalized data source v2 related plans") {
@@ -342,13 +325,24 @@ class DataSourceV2Suite extends QueryTest with SharedSQLContext {
   }
 }
 
+
+case class RangeInputSplit(start: Int, end: Int) extends InputSplit
+
 class SimpleSinglePartitionSource extends DataSourceV2 with ReadSupport {
 
   class Reader extends DataSourceReader {
-    override def readSchema(): StructType = new StructType().add("i", "int").add("j", "int")
+    override def getMetadata: Metadata = {
+      new SchemaOnlyMetadata(new StructType().add("i", "int").add("j", "int"))
+    }
 
-    override def planInputPartitions(): JList[InputPartition[Row]] = {
-      java.util.Arrays.asList(new SimpleInputPartition(0, 5))
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      override def getSplits: Array[InputSplit] = {
+        Array(RangeInputSplit(0, 5))
+      }
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      SimpleSplitReaderProvider
     }
   }
 
@@ -358,227 +352,242 @@ class SimpleSinglePartitionSource extends DataSourceV2 with ReadSupport {
 class SimpleDataSourceV2 extends DataSourceV2 with ReadSupport {
 
   class Reader extends DataSourceReader {
-    override def readSchema(): StructType = new StructType().add("i", "int").add("j", "int")
+    override def getMetadata: Metadata = {
+      new SchemaOnlyMetadata(new StructType().add("i", "int").add("j", "int"))
+    }
 
-    override def planInputPartitions(): JList[InputPartition[Row]] = {
-      java.util.Arrays.asList(new SimpleInputPartition(0, 5), new SimpleInputPartition(5, 10))
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      override def getSplits: Array[InputSplit] = {
+        Array(RangeInputSplit(0, 5), RangeInputSplit(5, 10))
+      }
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      SimpleSplitReaderProvider
     }
   }
 
   override def createReader(options: DataSourceOptions): DataSourceReader = new Reader
 }
 
-class SimpleInputPartition(start: Int, end: Int)
-  extends InputPartition[Row]
-  with InputPartitionReader[Row] {
-  private var current = start - 1
+object SimpleSplitReaderProvider extends SplitReaderProvider {
+  override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+    val s = split.asInstanceOf[RangeInputSplit]
 
-  override def createPartitionReader(): InputPartitionReader[Row] =
-    new SimpleInputPartition(start, end)
+    new InputPartitionReader[InternalRow] {
+      private var current = s.start - 1
 
-  override def next(): Boolean = {
-    current += 1
-    current < end
+      override def next(): Boolean = {
+        current += 1
+        current < s.end
+      }
+
+      override def get(): InternalRow = InternalRow(current, -current)
+
+      override def close(): Unit = {}
+    }
   }
-
-  override def get(): Row = Row(current, -current)
-
-  override def close(): Unit = {}
 }
-
 
 
 class AdvancedDataSourceV2 extends DataSourceV2 with ReadSupport {
 
-  class Reader extends DataSourceReader
-    with SupportsPushDownRequiredColumns with SupportsPushDownFilters {
+  class Reader extends DataSourceReader {
 
-    var requiredSchema = new StructType().add("i", "int").add("j", "int")
-    var filters = Array.empty[Filter]
+    override def getMetadata: Metadata = new AdvancedMetadata
 
-    override def pruneColumns(requiredSchema: StructType): Unit = {
-      this.requiredSchema = requiredSchema
-    }
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      val filters = meta.asInstanceOf[AdvancedMetadata].filters
 
-    override def pushFilters(filters: Array[Filter]): Array[Filter] = {
-      val (supported, unsupported) = filters.partition {
-        case GreaterThan("i", _: Int) => true
-        case _ => false
+      override def getSplits: Array[InputSplit] = {
+        val lowerBound = filters.collect {
+          case GreaterThan("i", v: Int) => v
+        }.headOption
+
+        val res = new scala.collection.mutable.ArrayBuffer[RangeInputSplit]
+
+        if (lowerBound.isEmpty) {
+          res.append(RangeInputSplit(0, 5))
+          res.append(RangeInputSplit(5, 10))
+        } else if (lowerBound.get < 4) {
+          res.append(RangeInputSplit(lowerBound.get + 1, 5))
+          res.append(RangeInputSplit(5, 10))
+        } else if (lowerBound.get < 9) {
+          res.append(RangeInputSplit(lowerBound.get + 1, 10))
+        }
+
+        res.toArray
       }
-      this.filters = supported
-      unsupported
     }
 
-    override def pushedFilters(): Array[Filter] = filters
-
-    override def readSchema(): StructType = {
-      requiredSchema
-    }
-
-    override def planInputPartitions(): JList[InputPartition[Row]] = {
-      val lowerBound = filters.collect {
-        case GreaterThan("i", v: Int) => v
-      }.headOption
-
-      val res = new ArrayList[InputPartition[Row]]
-
-      if (lowerBound.isEmpty) {
-        res.add(new AdvancedInputPartition(0, 5, requiredSchema))
-        res.add(new AdvancedInputPartition(5, 10, requiredSchema))
-      } else if (lowerBound.get < 4) {
-        res.add(new AdvancedInputPartition(lowerBound.get + 1, 5, requiredSchema))
-        res.add(new AdvancedInputPartition(5, 10, requiredSchema))
-      } else if (lowerBound.get < 9) {
-        res.add(new AdvancedInputPartition(lowerBound.get + 1, 10, requiredSchema))
-      }
-
-      res
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      new AdvancedSplitReaderProvider(meta.asInstanceOf[AdvancedMetadata].requiredSchema)
     }
   }
 
   override def createReader(options: DataSourceOptions): DataSourceReader = new Reader
 }
 
-class AdvancedInputPartition(start: Int, end: Int, requiredSchema: StructType)
-  extends InputPartition[Row] with InputPartitionReader[Row] {
+class AdvancedMetadata extends Metadata
+  with SupportsPushDownRequiredColumns with SupportsPushDownFilters {
 
-  private var current = start - 1
+  var requiredSchema = new StructType().add("i", "int").add("j", "int")
+  var filters = Array.empty[Filter]
 
-  override def createPartitionReader(): InputPartitionReader[Row] = {
-    new AdvancedInputPartition(start, end, requiredSchema)
+  override def pruneColumns(requiredSchema: StructType): Unit = {
+    this.requiredSchema = requiredSchema
   }
 
-  override def close(): Unit = {}
-
-  override def next(): Boolean = {
-    current += 1
-    current < end
-  }
-
-  override def get(): Row = {
-    val values = requiredSchema.map(_.name).map {
-      case "i" => current
-      case "j" => -current
+  override def pushFilters(filters: Array[Filter]): Array[Filter] = {
+    val (supported, unsupported) = filters.partition {
+      case GreaterThan("i", _: Int) => true
+      case _ => false
     }
-    Row.fromSeq(values)
+    this.filters = supported
+    unsupported
+  }
+
+  override def pushedFilters(): Array[Filter] = filters
+
+  override def getSchema(): StructType = {
+    requiredSchema
   }
 }
 
+class AdvancedSplitReaderProvider(requiredSchema: StructType) extends SplitReaderProvider {
+  override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+    val s = split.asInstanceOf[RangeInputSplit]
+    new InputPartitionReader[InternalRow] {
+      private val start = s.start
+      private val end = s.end
+      private var current = start - 1
 
-class UnsafeRowDataSourceV2 extends DataSourceV2 with ReadSupport {
+      override def close(): Unit = {}
 
-  class Reader extends DataSourceReader with SupportsScanUnsafeRow {
-    override def readSchema(): StructType = new StructType().add("i", "int").add("j", "int")
+      override def next(): Boolean = {
+        current += 1
+        current < end
+      }
 
-    override def planUnsafeInputPartitions(): JList[InputPartition[UnsafeRow]] = {
-      java.util.Arrays.asList(new UnsafeRowInputPartitionReader(0, 5),
-        new UnsafeRowInputPartitionReader(5, 10))
+      override def get(): InternalRow = {
+        val values = requiredSchema.map(_.name).map {
+          case "i" => current
+          case "j" => -current
+        }
+        InternalRow.fromSeq(values)
+      }
     }
   }
-
-  override def createReader(options: DataSourceOptions): DataSourceReader = new Reader
 }
 
-class UnsafeRowInputPartitionReader(start: Int, end: Int)
-  extends InputPartition[UnsafeRow] with InputPartitionReader[UnsafeRow] {
-
-  private val row = new UnsafeRow(2)
-  row.pointTo(new Array[Byte](8 * 3), 8 * 3)
-
-  private var current = start - 1
-
-  override def createPartitionReader(): InputPartitionReader[UnsafeRow] = this
-
-  override def next(): Boolean = {
-    current += 1
-    current < end
-  }
-  override def get(): UnsafeRow = {
-    row.setInt(0, current)
-    row.setInt(1, -current)
-    row
-  }
-
-  override def close(): Unit = {}
-}
 
 class SchemaRequiredDataSource extends DataSourceV2 with ReadSupportWithSchema {
 
-  class Reader(val readSchema: StructType) extends DataSourceReader {
-    override def planInputPartitions(): JList[InputPartition[Row]] =
-      java.util.Collections.emptyList()
+  class Reader(schema: StructType) extends DataSourceReader {
+    override def getMetadata: Metadata = new SchemaOnlyMetadata(schema)
+
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      override def getSplits: Array[InputSplit] = Array.empty
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      new SplitReaderProvider {}
+    }
   }
 
   override def createReader(schema: StructType, options: DataSourceOptions): DataSourceReader =
     new Reader(schema)
 }
 
+
 class BatchDataSourceV2 extends DataSourceV2 with ReadSupport {
 
-  class Reader extends DataSourceReader with SupportsScanColumnarBatch {
-    override def readSchema(): StructType = new StructType().add("i", "int").add("j", "int")
+  class Reader extends DataSourceReader {
+    override def getMetadata: Metadata = {
+      new SchemaOnlyMetadata(new StructType().add("i", "int").add("j", "int"))
+    }
 
-    override def planBatchInputPartitions(): JList[InputPartition[ColumnarBatch]] = {
-      java.util.Arrays.asList(
-        new BatchInputPartitionReader(0, 50), new BatchInputPartitionReader(50, 90))
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      override def getSplits: Array[InputSplit] = {
+        Array(RangeInputSplit(0, 50), RangeInputSplit(50, 90))
+      }
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      BatchSplitReaderProvider
     }
   }
 
   override def createReader(options: DataSourceOptions): DataSourceReader = new Reader
 }
 
-class BatchInputPartitionReader(start: Int, end: Int)
-  extends InputPartition[ColumnarBatch] with InputPartitionReader[ColumnarBatch] {
-
+object BatchSplitReaderProvider extends SplitReaderProvider {
   private final val BATCH_SIZE = 20
-  private lazy val i = new OnHeapColumnVector(BATCH_SIZE, IntegerType)
-  private lazy val j = new OnHeapColumnVector(BATCH_SIZE, IntegerType)
-  private lazy val batch = new ColumnarBatch(Array(i, j))
 
-  private var current = start
+  override def supportColumnarReader(): Boolean = true
 
-  override def createPartitionReader(): InputPartitionReader[ColumnarBatch] = this
+  override def createColumnarReader(split: InputSplit): InputPartitionReader[ColumnarBatch] = {
+    val s = split.asInstanceOf[RangeInputSplit]
+    new InputPartitionReader[ColumnarBatch] {
+      private val start = s.start
+      private val end = s.end
+      private lazy val i = new OnHeapColumnVector(BATCH_SIZE, IntegerType)
+      private lazy val j = new OnHeapColumnVector(BATCH_SIZE, IntegerType)
+      private lazy val batch = new ColumnarBatch(Array(i, j))
 
-  override def next(): Boolean = {
-    i.reset()
-    j.reset()
+      private var current = start
 
-    var count = 0
-    while (current < end && count < BATCH_SIZE) {
-      i.putInt(count, current)
-      j.putInt(count, -current)
-      current += 1
-      count += 1
-    }
+      override def next(): Boolean = {
+        i.reset()
+        j.reset()
 
-    if (count == 0) {
-      false
-    } else {
-      batch.setNumRows(count)
-      true
+        var count = 0
+        while (current < end && count < BATCH_SIZE) {
+          i.putInt(count, current)
+          j.putInt(count, -current)
+          current += 1
+          count += 1
+        }
+
+        if (count == 0) {
+          false
+        } else {
+          batch.setNumRows(count)
+          true
+        }
+      }
+
+      override def get(): ColumnarBatch = {
+        batch
+      }
+
+      override def close(): Unit = batch.close()
     }
   }
-
-  override def get(): ColumnarBatch = {
-    batch
-  }
-
-  override def close(): Unit = batch.close()
 }
+
 
 class PartitionAwareDataSource extends DataSourceV2 with ReadSupport {
 
   class Reader extends DataSourceReader with SupportsReportPartitioning {
-    override def readSchema(): StructType = new StructType().add("a", "int").add("b", "int")
-
-    override def planInputPartitions(): JList[InputPartition[Row]] = {
-      // Note that we don't have same value of column `a` across partitions.
-      java.util.Arrays.asList(
-        new SpecificInputPartitionReader(Array(1, 1, 3), Array(4, 4, 6)),
-        new SpecificInputPartitionReader(Array(2, 4, 4), Array(6, 2, 2)))
+    override def getMetadata: Metadata = {
+      new SchemaOnlyMetadata(new StructType().add("a", "int").add("b", "int"))
     }
 
-    override def outputPartitioning(): Partitioning = new MyPartitioning
+    override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+      override def getSplits: Array[InputSplit] = {
+        // Note that we don't have same value of column `a` across partitions.
+        Array(
+          SpecificInputSplit(Array(1, 1, 3), Array(4, 4, 6)),
+          SpecificInputSplit(Array(2, 4, 4), Array(6, 2, 2)))
+      }
+    }
+
+    override def getReaderProvider(meta: Metadata): SplitReaderProvider = {
+      SpecificSplitReaderProvider
+    }
+
+    override def outputPartitioning(meta: Metadata): Partitioning = new MyPartitioning
   }
 
   class MyPartitioning extends Partitioning {
@@ -593,21 +602,24 @@ class PartitionAwareDataSource extends DataSourceV2 with ReadSupport {
   override def createReader(options: DataSourceOptions): DataSourceReader = new Reader
 }
 
-class SpecificInputPartitionReader(i: Array[Int], j: Array[Int])
-  extends InputPartition[Row]
-  with InputPartitionReader[Row] {
-  assert(i.length == j.length)
+case class SpecificInputSplit(i: Array[Int], j: Array[Int]) extends InputSplit
 
-  private var current = -1
+object SpecificSplitReaderProvider extends SplitReaderProvider {
+  override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+    val s = split.asInstanceOf[SpecificInputSplit]
+    new InputPartitionReader[InternalRow] {
+      private val i = s.i
+      private val j = s.j
+      private var current = -1
 
-  override def createPartitionReader(): InputPartitionReader[Row] = this
+      override def next(): Boolean = {
+        current += 1
+        current < i.length
+      }
 
-  override def next(): Boolean = {
-    current += 1
-    current < i.length
+      override def get(): InternalRow = InternalRow(i(current), j(current))
+
+      override def close(): Unit = {}
+    }
   }
-
-  override def get(): Row = Row(i(current), j(current))
-
-  override def close(): Unit = {}
 }

@@ -31,6 +31,7 @@ import org.apache.spark.annotation.InterfaceStability;
  * partition readers that mix in {@link SupportsScanUnsafeRow}.
  */
 @InterfaceStability.Evolving
+// TODO: rename it to SplitReader
 public interface InputPartitionReader<T> extends Closeable {
 
   /**

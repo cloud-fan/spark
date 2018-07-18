@@ -17,19 +17,10 @@
 
 package org.apache.spark.sql.sources.v2.reader;
 
-import org.apache.spark.annotation.InterfaceStability;
-import org.apache.spark.sql.sources.v2.reader.streaming.PartitionOffset;
+import java.io.Serializable;
 
-/**
- * A mix-in interface for {@link InputPartition}. Continuous input partitions can
- * implement this interface to provide creating {@link InputPartitionReader} with particular offset.
- */
-@InterfaceStability.Evolving
-public interface ContinuousInputPartition<T> extends InputPartition<T> {
-  /**
-   * Create an input partition reader with particular offset as its startOffset.
-   *
-   * @param offset offset want to set as the input partition reader's startOffset.
-   */
-  InputPartitionReader<T> createContinuousReader(PartitionOffset offset);
+public interface InputSplit extends Serializable {
+  default String[] preferredLocations() {
+    return new String[0];
+  }
 }

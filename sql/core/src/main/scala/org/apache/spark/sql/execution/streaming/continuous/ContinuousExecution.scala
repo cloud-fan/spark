@@ -162,7 +162,7 @@ class ContinuousExecution(
       case ContinuousExecutionRelation(source, options, output) =>
         val reader = continuousSources(insertedSourceId)
         insertedSourceId += 1
-        val newOutput = reader.readSchema().toAttributes
+        val newOutput = reader.getMetadata.getSchema().toAttributes
 
         assert(output.size == newOutput.size,
           s"Invalid reader: ${Utils.truncatedString(output, ",")} != " +

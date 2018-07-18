@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression;
  * process this interface.
  */
 @InterfaceStability.Unstable
-public interface SupportsPushDownCatalystFilters extends DataSourceReader {
+public interface SupportsPushDownCatalystFilters extends Metadata {
 
   /**
    * Pushes down filters, and returns filters that need to be evaluated after scanning.

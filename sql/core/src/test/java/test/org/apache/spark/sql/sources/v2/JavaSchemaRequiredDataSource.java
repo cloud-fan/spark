@@ -17,14 +17,11 @@
 
 package test.org.apache.spark.sql.sources.v2;
 
-import java.util.List;
-
-import org.apache.spark.sql.Row;
+import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.sources.v2.DataSourceOptions;
 import org.apache.spark.sql.sources.v2.DataSourceV2;
 import org.apache.spark.sql.sources.v2.ReadSupportWithSchema;
-import org.apache.spark.sql.sources.v2.reader.DataSourceReader;
-import org.apache.spark.sql.sources.v2.reader.InputPartition;
+import org.apache.spark.sql.sources.v2.reader.*;
 import org.apache.spark.sql.types.StructType;
 
 public class JavaSchemaRequiredDataSource implements DataSourceV2, ReadSupportWithSchema {
@@ -37,15 +34,27 @@ public class JavaSchemaRequiredDataSource implements DataSourceV2, ReadSupportWi
     }
 
     @Override
-    public StructType readSchema() {
-      return schema;
+    public Metadata getMetadata() {
+      return new SchemaOnlyMetadata(schema);
     }
 
     @Override
-    public List<InputPartition<Row>> planInputPartitions() {
-      return java.util.Collections.emptyList();
+    public SplitManager getSplitManager(Metadata meta) {
+      return new SplitManager() {
+        @Override
+        public InputSplit[] getSplits() {
+          return new InputSplit[0];
+        }
+      };
+    }
+
+    @Override
+    public SplitReaderProvider getReaderProvider(Metadata meta) {
+      return new DummySplitReader();
     }
   }
+
+  static class DummySplitReader implements SplitReaderProvider {}
 
   @Override
   public DataSourceReader createReader(StructType schema, DataSourceOptions options) {

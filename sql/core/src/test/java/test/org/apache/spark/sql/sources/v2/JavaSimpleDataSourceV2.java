@@ -18,16 +18,13 @@
 package test.org.apache.spark.sql.sources.v2;
 
 import java.io.IOException;
-import java.util.List;
 
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.catalyst.expressions.GenericRow;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.sources.v2.DataSourceV2;
 import org.apache.spark.sql.sources.v2.DataSourceOptions;
 import org.apache.spark.sql.sources.v2.ReadSupport;
-import org.apache.spark.sql.sources.v2.reader.InputPartitionReader;
-import org.apache.spark.sql.sources.v2.reader.InputPartition;
-import org.apache.spark.sql.sources.v2.reader.DataSourceReader;
+import org.apache.spark.sql.sources.v2.reader.*;
 import org.apache.spark.sql.types.StructType;
 
 public class JavaSimpleDataSourceV2 implements DataSourceV2, ReadSupport {
@@ -36,46 +33,53 @@ public class JavaSimpleDataSourceV2 implements DataSourceV2, ReadSupport {
     private final StructType schema = new StructType().add("i", "int").add("j", "int");
 
     @Override
-    public StructType readSchema() {
-      return schema;
+    public Metadata getMetadata() {
+      return new SchemaOnlyMetadata(schema);
     }
 
     @Override
-    public List<InputPartition<Row>> planInputPartitions() {
-      return java.util.Arrays.asList(
-        new JavaSimpleInputPartition(0, 5),
-        new JavaSimpleInputPartition(5, 10));
+    public SplitManager getSplitManager(Metadata meta) {
+      return new SplitManager() {
+        @Override
+        public InputSplit[] getSplits() {
+          InputSplit[] splits = new InputSplit[2];
+          splits[0] = new JavaRangeInputSplit(0, 5);
+          splits[1] = new JavaRangeInputSplit(5, 10);
+          return splits;
+        }
+      };
+    }
+
+    @Override
+    public SplitReaderProvider getReaderProvider(Metadata meta) {
+      return new SimpleSplitReaderProvider();
     }
   }
 
-  static class JavaSimpleInputPartition implements InputPartition<Row>, InputPartitionReader<Row> {
-    private int start;
-    private int end;
-
-    JavaSimpleInputPartition(int start, int end) {
-      this.start = start;
-      this.end = end;
-    }
-
+  static class SimpleSplitReaderProvider implements SplitReaderProvider {
     @Override
-    public InputPartitionReader<Row> createPartitionReader() {
-      return new JavaSimpleInputPartition(start - 1, end);
-    }
+    public InputPartitionReader<InternalRow> createRowReader(InputSplit split) {
+      JavaRangeInputSplit s = (JavaRangeInputSplit) split;
+      return new InputPartitionReader<InternalRow>() {
+        int start = s.start - 1;
+        int end = s.end;
 
-    @Override
-    public boolean next() {
-      start += 1;
-      return start < end;
-    }
+        @Override
+        public boolean next() {
+          start += 1;
+          return start < end;
+        }
 
-    @Override
-    public Row get() {
-      return new GenericRow(new Object[] {start, -start});
-    }
+        @Override
+        public InternalRow get() {
+          return new GenericInternalRow(new Object[] {start, -start});
+        }
 
-    @Override
-    public void close() throws IOException {
+        @Override
+        public void close() throws IOException {
 
+        }
+      };
     }
   }
 

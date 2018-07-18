@@ -31,12 +31,15 @@ import scala.util.{Failure, Success, Try}
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming.LongOffset
 import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.sources.v2.{DataSourceOptions, DataSourceV2, MicroBatchReadSupport}
-import org.apache.spark.sql.sources.v2.reader.{InputPartition, InputPartitionReader}
+import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchReader, Offset}
 import org.apache.spark.sql.types.{StringType, StructField, StructType, TimestampType}
+import org.apache.spark.unsafe.types.UTF8String
 
 object TextSocketMicroBatchReader {
   val SCHEMA_REGULAR = StructType(StructField("value", StringType) :: Nil)
@@ -69,7 +72,7 @@ class TextSocketMicroBatchReader(options: DataSourceOptions) extends MicroBatchR
    * Stored in a ListBuffer to facilitate removing committed batches.
    */
   @GuardedBy("this")
-  private val batches = new ListBuffer[(String, Timestamp)]
+  private val batches = new ListBuffer[(UTF8String, Long)]
 
   @GuardedBy("this")
   private var currentOffset: LongOffset = LongOffset(-1L)
@@ -100,9 +103,9 @@ class TextSocketMicroBatchReader(options: DataSourceOptions) extends MicroBatchR
               return
             }
             TextSocketMicroBatchReader.this.synchronized {
-              val newData = (line,
-                Timestamp.valueOf(
-                  TextSocketMicroBatchReader.DATE_FORMAT.format(Calendar.getInstance().getTime()))
+              val newData = (
+                UTF8String.fromString(line),
+                DateTimeUtils.fromMillis(Calendar.getInstance().getTimeInMillis)
               )
               currentOffset += 1
               batches.append(newData)
@@ -133,61 +136,65 @@ class TextSocketMicroBatchReader(options: DataSourceOptions) extends MicroBatchR
     LongOffset(json.toLong)
   }
 
-  override def readSchema(): StructType = {
-    if (options.getBoolean("includeTimestamp", false)) {
+  override def getMetadata(): Metadata = {
+    val schema = if (options.getBoolean("includeTimestamp", false)) {
       TextSocketMicroBatchReader.SCHEMA_TIMESTAMP
     } else {
       TextSocketMicroBatchReader.SCHEMA_REGULAR
     }
+    new SchemaOnlyMetadata(schema)
   }
 
-  override def planInputPartitions(): JList[InputPartition[Row]] = {
-    assert(startOffset != null && endOffset != null,
-      "start offset and end offset should already be set before create read tasks.")
+  override def getSplitManager(meta: Metadata): SplitManager = new SplitManager {
+    override def getSplits: Array[InputSplit] = {
+      assert(startOffset != null && endOffset != null,
+        "start offset and end offset should already be set before create read tasks.")
 
-    val startOrdinal = LongOffset.convert(startOffset).get.offset.toInt + 1
-    val endOrdinal = LongOffset.convert(endOffset).get.offset.toInt + 1
+      val startOrdinal = LongOffset.convert(startOffset).get.offset.toInt + 1
+      val endOrdinal = LongOffset.convert(endOffset).get.offset.toInt + 1
 
-    // Internal buffer only holds the batches after lastOffsetCommitted
-    val rawList = synchronized {
-      if (initialized.compareAndSet(false, true)) {
-        initialize()
+      // Internal buffer only holds the batches after lastOffsetCommitted
+      val rawList = synchronized {
+        if (initialized.compareAndSet(false, true)) {
+          initialize()
+        }
+
+        val sliceStart = startOrdinal - lastOffsetCommitted.offset.toInt - 1
+        val sliceEnd = endOrdinal - lastOffsetCommitted.offset.toInt - 1
+        batches.slice(sliceStart, sliceEnd)
       }
 
-      val sliceStart = startOrdinal - lastOffsetCommitted.offset.toInt - 1
-      val sliceEnd = endOrdinal - lastOffsetCommitted.offset.toInt - 1
-      batches.slice(sliceStart, sliceEnd)
-    }
+      assert(SparkSession.getActiveSession.isDefined)
+      val spark = SparkSession.getActiveSession.get
+      val numPartitions = spark.sparkContext.defaultParallelism
 
-    assert(SparkSession.getActiveSession.isDefined)
-    val spark = SparkSession.getActiveSession.get
-    val numPartitions = spark.sparkContext.defaultParallelism
-
-    val slices = Array.fill(numPartitions)(new ListBuffer[(String, Timestamp)])
-    rawList.zipWithIndex.foreach { case (r, idx) =>
-      slices(idx % numPartitions).append(r)
-    }
-
-    (0 until numPartitions).map { i =>
-      val slice = slices(i)
-      new InputPartition[Row] {
-        override def createPartitionReader(): InputPartitionReader[Row] =
-          new InputPartitionReader[Row] {
-            private var currentIdx = -1
-
-            override def next(): Boolean = {
-              currentIdx += 1
-              currentIdx < slice.size
-            }
-
-            override def get(): Row = {
-              Row(slice(currentIdx)._1, slice(currentIdx)._2)
-            }
-
-            override def close(): Unit = {}
-          }
+      val slices = Array.fill(numPartitions)(new ListBuffer[(UTF8String, Long)])
+      rawList.zipWithIndex.foreach { case (r, idx) =>
+        slices(idx % numPartitions).append(r)
       }
-    }.toList.asJava
+
+      slices.map(TextSocketInputSplit)
+    }
+  }
+
+  override def getReaderProvider(meta: Metadata): SplitReaderProvider = new SplitReaderProvider {
+    override def createRowReader(split: InputSplit): InputPartitionReader[InternalRow] = {
+      new InputPartitionReader[InternalRow] {
+        private val slice = split.asInstanceOf[TextSocketInputSplit].slice
+        private var currentIdx = -1
+
+        override def next(): Boolean = {
+          currentIdx += 1
+          currentIdx < slice.size
+        }
+
+        override def get(): InternalRow = {
+          InternalRow(slice(currentIdx)._1, slice(currentIdx)._2)
+        }
+
+        override def close(): Unit = {}
+      }
+    }
   }
 
   override def commit(end: Offset): Unit = synchronized {
@@ -222,6 +229,8 @@ class TextSocketMicroBatchReader(options: DataSourceOptions) extends MicroBatchR
 
   override def toString: String = s"TextSocketV2[host: $host, port: $port]"
 }
+
+case class TextSocketInputSplit(slice: ListBuffer[(UTF8String, Long)]) extends InputSplit
 
 class TextSocketSourceProvider extends DataSourceV2
   with MicroBatchReadSupport with DataSourceRegister with Logging {

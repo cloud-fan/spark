@@ -25,7 +25,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.sources.v2.reader.{InputPartition, InputPartitionReader}
+import org.apache.spark.sql.sources.v2.reader.InputPartitionReader
 import org.apache.spark.sql.sources.v2.reader.streaming.PartitionOffset
 import org.apache.spark.util.ThreadUtils
 
@@ -38,14 +38,14 @@ import org.apache.spark.util.ThreadUtils
  */
 class ContinuousQueuedDataReader(
     partition: ContinuousDataSourceRDDPartition,
+    splitReaderProvider: UnsafeSplitReaderProvider,
     context: TaskContext,
     dataQueueSize: Int,
     epochPollIntervalMs: Long) extends Closeable {
-  private val reader = partition.inputPartition.createPartitionReader()
+  private val reader = splitReaderProvider.createRowReader(partition.inputSplit)
 
   // Important sequencing - we must get our starting point before the provider threads start running
-  private var currentOffset: PartitionOffset =
-    ContinuousDataSourceRDD.getContinuousReader(reader).getOffset
+  private var currentOffset: PartitionOffset = reader.continuousReader.getOffset
 
   /**
    * The record types in the read buffer.
@@ -137,7 +137,7 @@ class ContinuousQueuedDataReader(
 
     override def run(): Unit = {
       TaskContext.setTaskContext(context)
-      val baseReader = ContinuousDataSourceRDD.getContinuousReader(reader)
+      val baseReader = reader.continuousReader
       try {
         while (!shouldStop()) {
           if (!reader.next()) {

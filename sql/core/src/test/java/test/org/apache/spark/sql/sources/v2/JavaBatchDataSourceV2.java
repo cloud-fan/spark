@@ -18,7 +18,6 @@
 package test.org.apache.spark.sql.sources.v2;
 
 import java.io.IOException;
-import java.util.List;
 
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.sources.v2.DataSourceOptions;
@@ -33,79 +32,95 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 public class JavaBatchDataSourceV2 implements DataSourceV2, ReadSupport {
 
-  class Reader implements DataSourceReader, SupportsScanColumnarBatch {
+  class Reader implements DataSourceReader {
     private final StructType schema = new StructType().add("i", "int").add("j", "int");
 
     @Override
-    public StructType readSchema() {
-      return schema;
+    public Metadata getMetadata() {
+      return new SchemaOnlyMetadata(schema);
     }
 
     @Override
-    public List<InputPartition<ColumnarBatch>> planBatchInputPartitions() {
-      return java.util.Arrays.asList(
-               new JavaBatchInputPartition(0, 50), new JavaBatchInputPartition(50, 90));
+    public SplitManager getSplitManager(Metadata meta) {
+      return new SplitManager() {
+        @Override
+        public InputSplit[] getSplits() {
+          InputSplit[] splits = new InputSplit[2];
+          splits[0] = new JavaRangeInputSplit(0, 50);
+          splits[1] = new JavaRangeInputSplit(50, 90);
+          return splits;
+        }
+      };
+    }
+
+    @Override
+    public SplitReaderProvider getReaderProvider(Metadata meta) {
+      return new BatchSplitReaderProvider();
     }
   }
 
-  static class JavaBatchInputPartition
-      implements InputPartition<ColumnarBatch>, InputPartitionReader<ColumnarBatch> {
-    private int start;
-    private int end;
-
+  static class BatchSplitReaderProvider implements SplitReaderProvider {
     private static final int BATCH_SIZE = 20;
 
-    private OnHeapColumnVector i;
-    private OnHeapColumnVector j;
-    private ColumnarBatch batch;
-
-    JavaBatchInputPartition(int start, int end) {
-      this.start = start;
-      this.end = end;
+    @Override
+    public boolean supportColumnarReader() {
+      return true;
     }
 
     @Override
-    public InputPartitionReader<ColumnarBatch> createPartitionReader() {
-      this.i = new OnHeapColumnVector(BATCH_SIZE, DataTypes.IntegerType);
-      this.j = new OnHeapColumnVector(BATCH_SIZE, DataTypes.IntegerType);
-      ColumnVector[] vectors = new ColumnVector[2];
-      vectors[0] = i;
-      vectors[1] = j;
-      this.batch = new ColumnarBatch(vectors);
-      return this;
-    }
+    public InputPartitionReader<ColumnarBatch> createColumnarReader(InputSplit split) {
+      JavaRangeInputSplit s = (JavaRangeInputSplit) split;
+      return new InputPartitionReader<ColumnarBatch>() {
+        private int start;
+        private int end;
 
-    @Override
-    public boolean next() {
-      i.reset();
-      j.reset();
-      int count = 0;
-      while (start < end && count < BATCH_SIZE) {
-        i.putInt(count, start);
-        j.putInt(count, -start);
-        start += 1;
-        count += 1;
-      }
+        private OnHeapColumnVector i;
+        private OnHeapColumnVector j;
+        private ColumnarBatch batch;
 
-      if (count == 0) {
-        return false;
-      } else {
-        batch.setNumRows(count);
-        return true;
-      }
-    }
+        {
+          this.start = s.start;
+          this.end = s.end;
+          this.i = new OnHeapColumnVector(BATCH_SIZE, DataTypes.IntegerType);
+          this.j = new OnHeapColumnVector(BATCH_SIZE, DataTypes.IntegerType);
+          ColumnVector[] vectors = new ColumnVector[2];
+          vectors[0] = i;
+          vectors[1] = j;
+          this.batch = new ColumnarBatch(vectors);
+        }
 
-    @Override
-    public ColumnarBatch get() {
-      return batch;
-    }
+        @Override
+        public boolean next() {
+          i.reset();
+          j.reset();
+          int count = 0;
+          while (start < end && count < BATCH_SIZE) {
+            i.putInt(count, start);
+            j.putInt(count, -start);
+            start += 1;
+            count += 1;
+          }
 
-    @Override
-    public void close() throws IOException {
-      batch.close();
+          if (count == 0) {
+            return false;
+          } else {
+            batch.setNumRows(count);
+            return true;
+          }
+        }
+
+        @Override
+        public ColumnarBatch get() {
+          return batch;
+        }
+
+        @Override
+        public void close() throws IOException {
+          batch.close();
+        }
+      };
     }
   }
-
 
   @Override
   public DataSourceReader createReader(DataSourceOptions options) {
