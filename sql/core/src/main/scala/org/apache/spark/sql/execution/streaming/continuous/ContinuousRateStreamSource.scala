@@ -22,17 +22,16 @@ import org.json4s.jackson.Serialization
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.execution.streaming.{RateStreamOffset, SimpleStreamingScanConfig, SimpleStreamingScanConfigBuilder, ValueRunTimeMsPair}
+import org.apache.spark.sql.execution.streaming.{RateStreamOffset, ValueRunTimeMsPair}
 import org.apache.spark.sql.execution.streaming.sources.RateStreamProvider
 import org.apache.spark.sql.sources.v2.DataSourceOptions
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming._
-import org.apache.spark.sql.types.StructType
 
 case class RateStreamPartitionOffset(
    partition: Int, currentValue: Long, currentTimeMs: Long) extends PartitionOffset
 
-class RateStreamContinuousReadSupport(options: DataSourceOptions) extends ContinuousReadSupport {
+class RateStreamContinuousInputStream(options: DataSourceOptions) extends ContinuousInputStream {
   implicit val defaultFormats: DefaultFormats = DefaultFormats
 
   val creationTime = System.currentTimeMillis()
@@ -54,46 +53,10 @@ class RateStreamContinuousReadSupport(options: DataSourceOptions) extends Contin
     RateStreamOffset(Serialization.read[Map[Int, ValueRunTimeMsPair]](json))
   }
 
-  override def fullSchema(): StructType = RateStreamProvider.SCHEMA
-
-  override def newScanConfigBuilder(start: Offset): ScanConfigBuilder = {
-    new SimpleStreamingScanConfigBuilder(fullSchema(), start)
-  }
-
   override def initialOffset: Offset = createInitialOffset(numPartitions, creationTime)
 
-  override def planInputPartitions(config: ScanConfig): Array[InputPartition] = {
-    val startOffset = config.asInstanceOf[SimpleStreamingScanConfig].start
-
-    val partitionStartMap = startOffset match {
-      case off: RateStreamOffset => off.partitionToValueAndRunTimeMs
-      case off =>
-        throw new IllegalArgumentException(
-          s"invalid offset type ${off.getClass()} for ContinuousRateSource")
-    }
-    if (partitionStartMap.keySet.size != numPartitions) {
-      throw new IllegalArgumentException(
-        s"The previous run contained ${partitionStartMap.keySet.size} partitions, but" +
-        s" $numPartitions partitions are currently configured. The numPartitions option" +
-        " cannot be changed.")
-    }
-
-    Range(0, numPartitions).map { i =>
-      val start = partitionStartMap(i)
-      // Have each partition advance by numPartitions each row, with starting points staggered
-      // by their partition index.
-      RateStreamContinuousInputPartition(
-        start.value,
-        start.runTimeMs,
-        i,
-        numPartitions,
-        perPartitionRate)
-    }.toArray
-  }
-
-  override def createContinuousReaderFactory(
-      config: ScanConfig): ContinuousPartitionReaderFactory = {
-    RateStreamContinuousReaderFactory
+  override def createContinuousScan(start: Offset): ContinuousScan = {
+    new RateStreamContinuousScan(numPartitions, perPartitionRate, start)
   }
 
   override def commit(end: Offset): Unit = {}
@@ -111,7 +74,43 @@ class RateStreamContinuousReadSupport(options: DataSourceOptions) extends Contin
             creationTimeMs))
       }.toMap)
   }
+}
 
+class RateStreamContinuousScan(
+    numPartitions: Int,
+    perPartitionRate: Double,
+    start: Offset) extends ContinuousScan {
+
+  override def createContinuousReaderFactory(): ContinuousPartitionReaderFactory = {
+    RateStreamContinuousReaderFactory
+  }
+
+  override def planInputPartitions(): Array[InputPartition] = {
+    val partitionStartMap = start match {
+      case off: RateStreamOffset => off.partitionToValueAndRunTimeMs
+      case off =>
+        throw new IllegalArgumentException(
+          s"invalid offset type ${off.getClass()} for ContinuousRateSource")
+    }
+    if (partitionStartMap.keySet.size != numPartitions) {
+      throw new IllegalArgumentException(
+        s"The previous run contained ${partitionStartMap.keySet.size} partitions, but" +
+          s" $numPartitions partitions are currently configured. The numPartitions option" +
+          " cannot be changed.")
+    }
+
+    Range(0, numPartitions).map { i =>
+      val start = partitionStartMap(i)
+      // Have each partition advance by numPartitions each row, with starting points staggered
+      // by their partition index.
+      RateStreamContinuousInputPartition(
+        start.value,
+        start.runTimeMs,
+        i,
+        numPartitions,
+        perPartitionRate)
+    }.toArray
+  }
 }
 
 case class RateStreamContinuousInputPartition(
