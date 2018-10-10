@@ -24,7 +24,7 @@ import scala.collection.mutable.{Map => MutableMap}
 
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CurrentBatchTimestamp, CurrentDate, CurrentTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CurrentBatchTimestamp, CurrentDate, CurrentTimestamp, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.{LeafNode, LocalRelation, LogicalPlan, Project}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.datasources.v2.{FakeMicroBatchExec, StreamingDataSourceV2Relation, WriteToDataSourceV2}
@@ -58,6 +58,8 @@ class MicroBatchExecution(
   }
 
   private var watermarkTracker: WatermarkTracker = _
+
+  type PushDownResult = (MicroBatchInputStream, Seq[Expression], Seq[Expression])
 
   override lazy val logicalPlan: LogicalPlan = {
     assert(queryExecutionThread eq Thread.currentThread,
@@ -117,10 +119,10 @@ class MicroBatchExecution(
 
     // This is a temporary query planning, to get operator pushdown result of v2 sources.
     // TODO: update the streaming engine to do query planning only once.
-    val relationToStream = new IdentityHashMap[MicroBatchExecutionRelation, MicroBatchInputStream]
+    val relationToPushDownResult = new IdentityHashMap[MicroBatchExecutionRelation, PushDownResult]
     createExecution(_logicalPlan, sparkSession).sparkPlan.foreach {
       case exec: FakeMicroBatchExec =>
-        if (relationToStream.containsKey(exec.relation)) {
+        if (relationToPushDownResult.containsKey(exec.relation)) {
           // This is a self-union/self-join, don't apply operator pushdown, since we want to keep
           // one stream instance for the self-unioned/self-joined source.
           // TODO: we can push down shared operators to the self-unioned/self-joined sources.
@@ -129,9 +131,11 @@ class MicroBatchExecution(
           val config = configBuilder.build()
           val stream = exec.relation.table.createMicroBatchInputStream(
             exec.relation.metadataPath, config, options)
-          relationToStream.put(exec.relation, stream)
+          relationToPushDownResult.put(exec.relation,
+            (stream, Nil, exec.fullFilters))
         } else {
-          relationToStream.put(exec.relation, exec.stream)
+          relationToPushDownResult.put(exec.relation,
+            (exec.stream, exec.pushedFilters, exec.postScanFilters))
         }
 
       case _ =>
@@ -139,9 +143,10 @@ class MicroBatchExecution(
 
     val finalPlan = _logicalPlan.transform {
       case r: MicroBatchExecutionRelation =>
-        val stream = relationToStream.get(r)
-        assert(stream != null)
-        StreamingDataSourceV2Relation(r.output, r.ds, r.options, stream)
+        val pushDownResult = relationToPushDownResult.get(r)
+        assert(pushDownResult != null)
+        StreamingDataSourceV2Relation(r.output, r.ds, r.options,
+          pushDownResult._1, pushDownResult._2, pushDownResult._3)
     }
 
     sources = finalPlan.collect {

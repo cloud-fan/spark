@@ -23,14 +23,14 @@ import scala.collection.mutable
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{sources, Strategy}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, AttributeSet, Expression}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeSet, Expression, NamedExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.{AppendData, LogicalPlan, Repartition}
 import org.apache.spark.sql.execution.{FilterExec, LeafExecNode, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.streaming.{ContinuousExecutionRelation, MicroBatchExecutionRelation, StreamingExecutionRelation}
 import org.apache.spark.sql.execution.streaming.continuous.{ContinuousCoalesceExec, WriteToContinuousDataSource, WriteToContinuousDataSourceExec}
-import org.apache.spark.sql.sources.v2.DataSourceOptions
+import org.apache.spark.sql.sources.v2.{DataSourceOptions, Table}
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousInputStream, MicroBatchInputStream}
 
@@ -82,52 +82,69 @@ object DataSourceV2Strategy extends Strategy {
   // TODO: nested column pruning.
   private def pruneColumns(
       configBuilder: ScanConfigBuilder,
-      relation: DataSourceV2Relation,
-      exprs: Seq[Expression]): (ScanConfig, Seq[AttributeReference]) = {
+      fullOutput: Seq[Attribute],
+      exprs: Seq[Expression]): (ScanConfig, Seq[Attribute]) = {
     configBuilder match {
       case r: SupportsPushDownRequiredColumns =>
         val requiredColumns = AttributeSet(exprs.flatMap(_.references))
-        val neededOutput = relation.output.filter(requiredColumns.contains)
-        if (neededOutput != relation.output) {
+        val neededOutput = fullOutput.filter(requiredColumns.contains)
+        if (neededOutput != fullOutput) {
           r.pruneColumns(neededOutput.toStructType)
           val config = r.build()
-          val nameToAttr = relation.output.map(_.name).zip(relation.output).toMap
+          val nameToAttr = fullOutput.map(_.name).zip(fullOutput).toMap
           config -> config.readSchema().toAttributes.map {
             // We have to keep the attribute id during transformation.
             a => a.withExprId(nameToAttr(a.name).exprId)
           }
         } else {
-          r.build() -> relation.output
+          r.build() -> fullOutput
         }
 
-      case _ => configBuilder.build() -> relation.output
+      case _ => configBuilder.build() -> fullOutput
     }
   }
 
+  private def pushDownOperators(
+      source: String,
+      options: DataSourceOptions,
+      table: Table,
+      fullOutput: Seq[Attribute],
+      filters: Seq[Expression],
+      project: Seq[NamedExpression])
+    : (ScanConfig, Seq[Expression], Seq[Expression], Seq[Attribute]) = {
+    val configBuilder = table.newScanConfigBuilder(options)
+    // `pushedFilters` will be pushed down and evaluated in the underlying data sources.
+    // `postScanFilters` need to be evaluated after the scan.
+    // `postScanFilters` and `pushedFilters` can overlap, e.g. the parquet row group filter.
+    val (pushedFilters, postScanFilters) = pushFilters(configBuilder, filters)
+    val (config, output) = pruneColumns(configBuilder, fullOutput, project ++ postScanFilters)
+    logInfo(
+      s"""
+         |Pushing operators to $source
+         |Pushed Filters: ${pushedFilters.mkString(", ")}
+         |Post-Scan Filters: ${postScanFilters.mkString(",")}
+         |Output: ${output.mkString(", ")}
+         """.stripMargin)
+    (config, pushedFilters, postScanFilters, output)
+  }
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
     case PhysicalOperation(project, filters, relation: DataSourceV2Relation) =>
-      val dsOptions = new DataSourceOptions(relation.options.asJava)
-      val configBuilder = relation.table.newScanConfigBuilder(dsOptions)
-      // `pushedFilters` will be pushed down and evaluated in the underlying data sources.
-      // `postScanFilters` need to be evaluated after the scan.
-      // `postScanFilters` and `pushedFilters` can overlap, e.g. the parquet row group filter.
-      val (pushedFilters, postScanFilters) = pushFilters(configBuilder, filters)
-      val (config, output) = pruneColumns(configBuilder, relation, project ++ postScanFilters)
-      logInfo(
-        s"""
-           |Pushing operators to ${relation.source.getClass}
-           |Pushed Filters: ${pushedFilters.mkString(", ")}
-           |Post-Scan Filters: ${postScanFilters.mkString(",")}
-           |Output: ${output.mkString(", ")}
-         """.stripMargin)
+      val options = new DataSourceOptions(relation.options.asJava)
+      val (config, pushedFilters, postScanFilters, output) = pushDownOperators(
+        relation.source.getClass.toString,
+        options,
+        relation.table,
+        relation.output,
+        filters,
+        project)
 
       val scan = DataSourceV2ScanExec(
         output,
         relation.source,
         relation.options,
         pushedFilters,
-        relation.table.createBatchScan(config, dsOptions))
+        relation.table.createBatchScan(config, options))
 
       val filterCondition = postScanFilters.reduceLeftOption(And)
       val withFilter = filterCondition.map(FilterExec(_, scan)).getOrElse(scan)
@@ -144,32 +161,52 @@ object DataSourceV2Strategy extends Strategy {
     case r: StreamingExecutionRelation =>
       FakeStreamingScanExec(r.output) :: Nil
 
-    case r: MicroBatchExecutionRelation =>
+    case PhysicalOperation(project, filters, r: MicroBatchExecutionRelation) =>
       val options = new DataSourceOptions(r.options.asJava)
-      val configBuilder = r.table.newScanConfigBuilder(options)
-      // TODO: operator pushdown
-      val config = configBuilder.build()
+      val (config, pushedFilters, postScanFilters, output) = pushDownOperators(
+        r.source,
+        options,
+        r.table,
+        r.output,
+        filters,
+        project)
+
       val stream = r.table.createMicroBatchInputStream(r.metadataPath, config, options)
-      FakeMicroBatchExec(r, stream, config.readSchema().toAttributes) :: Nil
+      val fakeScan = FakeMicroBatchExec(r, stream, filters, pushedFilters, postScanFilters, output)
+      val filterCondition = postScanFilters.reduceLeftOption(And)
+      val withFilter = filterCondition.map(FilterExec(_, fakeScan)).getOrElse(fakeScan)
 
-    case r: ContinuousExecutionRelation =>
+      ProjectExec(project, withFilter) :: Nil
+
+    case PhysicalOperation(project, filters, r: ContinuousExecutionRelation) =>
       val options = new DataSourceOptions(r.options.asJava)
-      val configBuilder = r.table.newScanConfigBuilder(options)
-      // TODO: operator pushdown
-      val config = configBuilder.build()
-      val stream = r.table.createContinuousInputStream(r.metadataPath, config, options)
-      FakeContinuousExec(r, stream, config.readSchema().toAttributes) :: Nil
+      val (config, pushedFilters, postScanFilters, output) = pushDownOperators(
+        r.source,
+        options,
+        r.table,
+        r.output,
+        filters,
+        project)
 
-    case r: StreamingDataSourceV2Relation =>
-      // ensure there is a projection, which will produce unsafe rows required by some operators
-      ProjectExec(r.output,
-        DataSourceV2ScanExec(
-          r.output,
-          r.source,
-          r.options,
-          r.pushedFilters,
-          r.createScan(),
-          Some(r.stream))) :: Nil
+      val stream = r.table.createContinuousInputStream(r.metadataPath, config, options)
+      val fakeScan = FakeContinuousExec(r, stream, filters, pushedFilters, postScanFilters, output)
+      val filterCondition = postScanFilters.reduceLeftOption(And)
+      val withFilter = filterCondition.map(FilterExec(_, fakeScan)).getOrElse(fakeScan)
+
+      ProjectExec(project, withFilter) :: Nil
+
+    case PhysicalOperation(project, filters, r: StreamingDataSourceV2Relation) =>
+      val scan = DataSourceV2ScanExec(
+        r.output,
+        r.source,
+        r.options,
+        r.pushedFilters,
+        r.createScan(),
+        Some(r.stream))
+      val filterCondition = r.postScanFilters.reduceLeftOption(And)
+      val withFilter = filterCondition.map(FilterExec(_, scan)).getOrElse(scan)
+      // always add the projection, which will produce unsafe rows required by some operators
+      ProjectExec(project, withFilter) :: Nil
 
     case WriteToDataSourceV2(writer, query) =>
       WriteToDataSourceV2Exec(writer, planLater(query)) :: Nil
@@ -205,6 +242,9 @@ case class FakeStreamingScanExec(output: Seq[Attribute]) extends LeafExecNode {
 case class FakeMicroBatchExec(
     relation: MicroBatchExecutionRelation,
     stream: MicroBatchInputStream,
+    fullFilters: Seq[Expression],
+    pushedFilters: Seq[Expression],
+    postScanFilters: Seq[Expression],
     output: Seq[Attribute]) extends LeafExecNode {
   override protected def doExecute(): RDD[InternalRow] = {
     throw new IllegalStateException("cannot execute FakeMicroBatchExec")
@@ -214,6 +254,9 @@ case class FakeMicroBatchExec(
 case class FakeContinuousExec(
     relation: ContinuousExecutionRelation,
     stream: ContinuousInputStream,
+    fullFilters: Seq[Expression],
+    pushedFilters: Seq[Expression],
+    postScanFilters: Seq[Expression],
     output: Seq[Attribute]) extends LeafExecNode {
   override protected def doExecute(): RDD[InternalRow] = {
     throw new IllegalStateException("cannot execute FakeContinuousExec")

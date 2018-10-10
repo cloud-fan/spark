@@ -90,6 +90,8 @@ case class StreamingDataSourceV2Relation(
     source: DataSourceV2,
     options: Map[String, String],
     stream: InputStream,
+    pushedFilters: Seq[Expression],
+    postScanFilters: Seq[Expression],
     startOffset: Option[Offset] = None,
     endOffset: Option[Offset] = None)
   extends LeafNode with MultiInstanceRelation with DataSourceV2StringFormat {
@@ -97,8 +99,6 @@ case class StreamingDataSourceV2Relation(
   override def isStreaming: Boolean = true
 
   override def simpleString: String = "Streaming RelationV2 " + metadataString
-
-  override def pushedFilters: Seq[Expression] = Nil
 
   override def newInstance(): LogicalPlan = copy(output = output.map(_.newInstance()))
 

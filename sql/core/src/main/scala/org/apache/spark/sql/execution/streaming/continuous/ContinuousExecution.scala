@@ -27,7 +27,7 @@ import scala.collection.mutable.{Map => MutableMap}
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{CurrentDate, CurrentTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{CurrentDate, CurrentTimestamp, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.datasources.v2.{FakeContinuousExec, StreamingDataSourceV2Relation}
@@ -55,6 +55,8 @@ class ContinuousExecution(
 
   @volatile protected var sources: Seq[InputStream] = Seq.empty
 
+  type PushDownResult = (ContinuousInputStream, Seq[Expression], Seq[Expression])
+
   // For use only in test harnesses.
   private[sql] var currentEpochCoordinatorId: String = _
 
@@ -77,10 +79,10 @@ class ContinuousExecution(
 
     // This is a temporary query planning, to get operator pushdown result of v2 sources.
     // TODO: update the streaming engine to do query planning only once.
-    val relationToStream = new IdentityHashMap[ContinuousExecutionRelation, ContinuousInputStream]
+    val relationToPushDownResult = new IdentityHashMap[ContinuousExecutionRelation, PushDownResult]
     createExecution(_logicalPlan, sparkSession).sparkPlan.foreach {
       case exec: FakeContinuousExec =>
-        if (relationToStream.containsKey(exec.relation)) {
+        if (relationToPushDownResult.containsKey(exec.relation)) {
           // This is a self-union/self-join, don't apply operator pushdown, since we want to keep
           // one stream instance for the self-unioned/self-joined source.
           // TODO: we can push down shared operators to the self-unioned/self-joined sources.
@@ -89,9 +91,11 @@ class ContinuousExecution(
           val config = configBuilder.build()
           val stream = exec.relation.table.createContinuousInputStream(
             exec.relation.metadataPath, config, options)
-          relationToStream.put(exec.relation, stream)
+          relationToPushDownResult.put(exec.relation,
+            (stream, Nil, exec.fullFilters)
         } else {
-          relationToStream.put(exec.relation, exec.stream)
+          relationToPushDownResult.put(exec.relation,
+            (exec.stream, exec.pushedFilters, exec.postScanFilters))
         }
 
       case _ =>
@@ -99,9 +103,10 @@ class ContinuousExecution(
 
     val finalPlan = _logicalPlan.transform {
       case r: ContinuousExecutionRelation =>
-        val stream = relationToStream.get(r)
-        assert(stream != null)
-        StreamingDataSourceV2Relation(r.output, r.ds, r.options, stream)
+        val pushDownResult = relationToPushDownResult.get(r)
+        assert(pushDownResult != null)
+        StreamingDataSourceV2Relation(r.output, r.ds, r.options,
+          pushDownResult._1, pushDownResult._2, pushDownResult._3)
     }
 
     sources = finalPlan.collect {
