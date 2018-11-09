@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.hive.execution
 
+import java.sql.Timestamp
+
 import org.apache.hadoop.hive.serde2.`lazy`.LazySimpleSerDe
 import org.scalatest.exceptions.TestFailedException
 
@@ -27,9 +29,10 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{SparkPlan, SparkPlanTest, UnaryExecNode}
 import org.apache.spark.sql.hive.test.TestHiveSingleton
+import org.apache.spark.sql.test.SQLTestUtils
 import org.apache.spark.sql.types.StringType
 
-class ScriptTransformationSuite extends SparkPlanTest with TestHiveSingleton {
+class ScriptTransformationSuite extends SparkPlanTest with SQLTestUtils with TestHiveSingleton {
   import spark.implicits._
 
   private val noSerdeIOSchema = HiveScriptIOSchema(
@@ -154,6 +157,35 @@ class ScriptTransformationSuite extends SparkPlanTest with TestHiveSingleton {
         ioschema = serdeIOSchema
       ),
       rowsDf.select("name").collect())
+  }
+
+  test("SPARK-25990: TRANSFORM should handle different data types correctly") {
+    assume(TestUtils.testCommandAvailable("python3"))
+    val scriptFilePath = getTestResourcePath("test_script.py")
+
+    withTempView("v") {
+      val df = Seq(
+        (1, "1", 1.0, BigDecimal(1.0), new Timestamp(1)),
+        (2, "2", 2.0, BigDecimal(2.0), new Timestamp(2)),
+        (3, "3", 3.0, BigDecimal(3.0), new Timestamp(3))
+      ).toDF("a", "b", "c", "d", "e")
+      df.createTempView("v")
+
+      val query = sql(
+        s"""
+          |SELECT
+          |TRANSFORM(a, b, c, d, e)
+          |USING 'python3 $scriptFilePath' AS (a, b, c, d, e)
+          |FROM v
+        """.stripMargin)
+
+      checkAnswer(query, identity, df.select(
+        'a.cast("string"),
+        'b.cast("string"),
+        'c.cast("string"),
+        'd.cast("decimal(1, 0)").cast("string"),
+        'e.cast("string")).collect())
+    }
   }
 }
 
