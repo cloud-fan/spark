@@ -109,14 +109,17 @@ class QueryExecution(
     ReuseExchange(sparkSession.sessionState.conf),
     ReuseSubquery(sparkSession.sessionState.conf))
 
+  // With adaptive execution, whole stage codegen will be planned inside `QueryStage`, so we exclude
+  // `CollapseCodegenStages` here.
   protected def adaptivePreparations: Seq[Rule[SparkPlan]] = Seq(
     PlanSubqueries(sparkSession),
     EnsureRequirements(sparkSession.sessionState.conf),
+    ReuseExchange(sparkSession.sessionState.conf),
     ReuseSubquery(sparkSession.sessionState.conf),
     // PlanQueryStage needs to be the last rule because it divides the plan into multiple sub-trees
     // by inserting leaf node QueryStageInput. Transforming the plan after applying this rule will
     // only transform node in a sub-tree.
-    PlanQueryStage(sparkSession.sessionState.conf))
+    PlanQueryStage)
 
   def simpleString: String = withRedaction {
     val concat = new StringConcat()

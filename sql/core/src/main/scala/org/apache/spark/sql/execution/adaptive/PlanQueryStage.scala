@@ -17,14 +17,9 @@
 
 package org.apache.spark.sql.execution.adaptive
 
-import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange, ShuffleExchangeExec}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange, ReusedExchangeExec, ShuffleExchangeExec}
 
 /**
  * Divide the spark plan into multiple QueryStages. For each Exchange in the plan, it adds a
@@ -34,47 +29,28 @@ import org.apache.spark.sql.types.StructType
  * is a leaf node. Transforming the plan after applying this rule will only transform node in a
  * sub-tree.
  */
-case class PlanQueryStage(conf: SQLConf) extends Rule[SparkPlan] {
+object PlanQueryStage extends Rule[SparkPlan] {
 
   def apply(plan: SparkPlan): SparkPlan = {
-
-    val newPlan = if (!conf.exchangeReuseEnabled) {
-      plan.transformUp {
-        case e: ShuffleExchangeExec =>
-          ShuffleQueryStageInput(ShuffleQueryStage(e), e.output)
-        case e: BroadcastExchangeExec =>
-          BroadcastQueryStageInput(BroadcastQueryStage(e), e.output)
-      }
-    } else {
-      // Build a hash map using schema of exchanges to avoid O(N*N) sameResult calls.
-      val stages = mutable.HashMap[StructType, ArrayBuffer[QueryStage]]()
-
-      plan.transformUp {
-        case exchange: Exchange =>
-          val sameSchema = stages.getOrElseUpdate(exchange.schema, ArrayBuffer[QueryStage]())
-          val samePlan = sameSchema.find { s =>
-            exchange.sameResult(s.child)
-          }
-          if (samePlan.isDefined) {
-            // Keep the output of this exchange, the following plans require that to resolve
-            // attributes.
-            exchange match {
-              case e: ShuffleExchangeExec => ShuffleQueryStageInput(
-                samePlan.get.asInstanceOf[ShuffleQueryStage], exchange.output)
-              case e: BroadcastExchangeExec => BroadcastQueryStageInput(
-                samePlan.get.asInstanceOf[BroadcastQueryStage], exchange.output)
-            }
-          } else {
-            val queryStageInput = exchange match {
-              case e: ShuffleExchangeExec =>
-                ShuffleQueryStageInput(ShuffleQueryStage(e), e.output)
-              case e: BroadcastExchangeExec =>
-                BroadcastQueryStageInput(BroadcastQueryStage(e), e.output)
-            }
-            sameSchema += queryStageInput.childStage
-            queryStageInput
-          }
-      }
+    val exchangeToQueryStage = new java.util.IdentityHashMap[Exchange, QueryStage]
+    val newPlan = plan.transformUp {
+      case e: ShuffleExchangeExec =>
+        val queryStage = ShuffleQueryStage(e)
+        exchangeToQueryStage.put(e, queryStage)
+        ShuffleQueryStageInput(queryStage, e.output)
+      case e: BroadcastExchangeExec =>
+        val queryStage = BroadcastQueryStage(e)
+        exchangeToQueryStage.put(e, queryStage)
+        BroadcastQueryStageInput(queryStage, e.output)
+      // The `ReusedExchangeExec` was added in the rule `ReuseExchange`, via transforming up the
+      // query plan. This rule also transform up the query plan, so when we hit `ReusedExchangeExec`
+      // here, the exchange being reused must already be hit before and there should be an entry
+      // for it in `exchangeToQueryStage`.
+      case e: ReusedExchangeExec =>
+        exchangeToQueryStage.get(e.child) match {
+          case q: ShuffleQueryStage => ShuffleQueryStageInput(q, e.output)
+          case q: BroadcastQueryStage => BroadcastQueryStageInput(q, e.output)
+        }
     }
     ResultQueryStage(newPlan)
   }
