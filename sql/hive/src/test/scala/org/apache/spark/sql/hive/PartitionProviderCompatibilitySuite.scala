@@ -40,7 +40,7 @@ class PartitionProviderCompatibilitySuite
       .save(dir.getAbsolutePath)
 
     spark.sql(s"""
-      |create table $tableName (fieldOne long, partCol int)
+      |create table $tableName (fieldOne long, partCol long)
       |using ${spark.sessionState.conf.defaultDataSourceName}
       |options (path "${dir.toURI}")
       |partitioned by (partCol)""".stripMargin)
