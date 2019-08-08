@@ -18,12 +18,11 @@
 package org.apache.spark.sql.execution.datasources.v2
 
 import java.util
-import java.util.Locale
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalog.v2.{Identifier, TableCatalog, TableChange}
 import org.apache.spark.sql.catalog.v2.expressions.{BucketTransform, FieldReference, IdentityTransform, LogicalExpressions, Transform}
 import org.apache.spark.sql.catalog.v2.utils.CatalogV2Util
@@ -31,8 +30,8 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException, TableAlreadyExistsException}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable, CatalogTableType, CatalogUtils, SessionCatalog}
 import org.apache.spark.sql.execution.datasources.DataSource
-import org.apache.spark.sql.internal.SessionState
-import org.apache.spark.sql.sources.v2.{Table, TableCapability}
+import org.apache.spark.sql.internal.{SessionState, SQLConf}
+import org.apache.spark.sql.sources.v2.{Table, TableProvider}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
@@ -63,6 +62,14 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
     }
   }
 
+  override def tableExists(ident: Identifier): Boolean = {
+    if (ident.namespace().length <= 1) {
+      catalog.tableExists(ident.asTableIdentifier)
+    } else {
+      false
+    }
+  }
+
   override def loadTable(ident: Identifier): Table = {
     val catalogTable = try {
       catalog.getTableMetadata(ident.asTableIdentifier)
@@ -71,7 +78,7 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
         throw new NoSuchTableException(ident)
     }
 
-    CatalogTableAsV2(catalogTable)
+    V2SessionCatalog.convertV1TableToV2(catalogTable, sessionState.conf)
   }
 
   override def invalidateTable(ident: Identifier): Unit = {
@@ -84,8 +91,23 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
       partitions: Array[Transform],
       properties: util.Map[String, String]): Table = {
 
-    val (partitionColumns, maybeBucketSpec) = V2SessionCatalog.convertTransforms(partitions)
     val provider = properties.getOrDefault("provider", sessionState.conf.defaultDataSourceName)
+
+    val (actualSchema, actualPartitions) = if (schema.isEmpty && partitions.isEmpty) {
+      // If `CREATE TABLE ... USING` does not specify table metadata, get the table metadata from
+      // data source first.
+      val cls = DataSource.lookupDataSource(provider, sessionState.conf)
+      // A sanity check. This is guaranteed by `DataSourceResolution`.
+      assert(classOf[TableProvider].isAssignableFrom(cls))
+
+      val table = cls.newInstance().asInstanceOf[TableProvider].getTable(
+        new CaseInsensitiveStringMap(properties))
+      table.schema() -> table.partitioning()
+    } else {
+      schema -> partitions
+    }
+
+    val (partitionColumns, maybeBucketSpec) = V2SessionCatalog.convertTransforms(actualPartitions)
     val tableProperties = properties.asScala
     val location = Option(properties.get("location"))
     val storage = DataSource.buildStorageFormatFromOptions(tableProperties.toMap)
@@ -95,7 +117,7 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
       identifier = ident.asTableIdentifier,
       tableType = CatalogTableType.MANAGED,
       storage = storage,
-      schema = schema,
+      schema = actualSchema,
       provider = Some(provider),
       partitionColumnNames = partitionColumns,
       bucketSpec = maybeBucketSpec,
@@ -137,19 +159,14 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
   }
 
   override def dropTable(ident: Identifier): Boolean = {
-    try {
-      if (loadTable(ident) != null) {
-        catalog.dropTable(
-          ident.asTableIdentifier,
-          ignoreIfNotExists = true,
-          purge = true /* skip HDFS trash */)
-        true
-      } else {
-        false
-      }
-    } catch {
-      case _: NoSuchTableException =>
-        false
+    if (tableExists(ident)) {
+      catalog.dropTable(
+        ident.asTableIdentifier,
+        ignoreIfNotExists = true,
+        purge = true /* skip HDFS trash */)
+      true
+    } else {
+      false
     }
   }
 
@@ -167,66 +184,6 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
   }
 
   override def toString: String = s"V2SessionCatalog($name)"
-}
-
-/**
- * An implementation of catalog v2 [[Table]] to expose v1 table metadata.
- */
-case class CatalogTableAsV2(v1Table: CatalogTable) extends Table {
-  implicit class IdentifierHelper(identifier: TableIdentifier) {
-    def quoted: String = {
-      identifier.database match {
-        case Some(db) =>
-          Seq(db, identifier.table).map(quote).mkString(".")
-        case _ =>
-          quote(identifier.table)
-
-      }
-    }
-
-    private def quote(part: String): String = {
-      if (part.contains(".") || part.contains("`")) {
-        s"`${part.replace("`", "``")}`"
-      } else {
-        part
-      }
-    }
-  }
-
-  def catalogTable: CatalogTable = v1Table
-
-  lazy val options: Map[String, String] = {
-    v1Table.storage.locationUri match {
-      case Some(uri) =>
-        v1Table.storage.properties + ("path" -> uri.toString)
-      case _ =>
-        v1Table.storage.properties
-    }
-  }
-
-  override lazy val properties: util.Map[String, String] = v1Table.properties.asJava
-
-  override lazy val schema: StructType = v1Table.schema
-
-  override lazy val partitioning: Array[Transform] = {
-    val partitions = new mutable.ArrayBuffer[Transform]()
-
-    v1Table.partitionColumnNames.foreach { col =>
-      partitions += LogicalExpressions.identity(col)
-    }
-
-    v1Table.bucketSpec.foreach { spec =>
-      partitions += LogicalExpressions.bucket(spec.numBuckets, spec.bucketColumnNames: _*)
-    }
-
-    partitions.toArray
-  }
-
-  override def name: String = v1Table.identifier.quoted
-
-  override def capabilities: util.Set[TableCapability] = new util.HashSet[TableCapability]()
-
-  override def toString: String = s"CatalogTableAsV2($name)"
 }
 
 private[sql] object V2SessionCatalog {
@@ -251,5 +208,57 @@ private[sql] object V2SessionCatalog {
 
     (identityCols, bucketSpec)
   }
-}
 
+  /**
+   * Convert a v1 [[CatalogTable]] to a v2 [[Table]], if the v1 table's provider is a Data Source
+   * V2 implementation.
+   */
+  def convertV1TableToV2(v1Table: CatalogTable, conf: SQLConf): Table = {
+    assert(v1Table.provider.isDefined)
+    val cls = DataSource.lookupDataSource(v1Table.provider.get, conf)
+    if (!classOf[TableProvider].isAssignableFrom(cls)) {
+      throw new AnalysisException(s"${cls.getName} is not a valid Spark SQL Data Source.")
+    }
+
+    val provider = cls.newInstance().asInstanceOf[TableProvider]
+
+    val options: Map[String, String] = {
+      v1Table.storage.locationUri match {
+        case Some(uri) =>
+          v1Table.storage.properties + ("path" -> uri.toString)
+        case _ =>
+          v1Table.storage.properties
+      }
+    }
+
+    val partitioning: Array[Transform] = {
+      val partitions = new mutable.ArrayBuffer[Transform]()
+
+      v1Table.partitionColumnNames.foreach { col =>
+        partitions += LogicalExpressions.identity(col)
+      }
+
+      v1Table.bucketSpec.foreach { spec =>
+        partitions += LogicalExpressions.bucket(spec.numBuckets, spec.bucketColumnNames: _*)
+      }
+
+      partitions.toArray
+    }
+
+    val v2Options = new CaseInsensitiveStringMap(options.asJava)
+    try {
+      provider.getTable(v2Options, v1Table.schema, partitioning)
+    } catch {
+      case _: UnsupportedOperationException =>
+        // If the table can't accept user-specified schema and partitions, get the table via
+        // options directly.
+        val table = provider.getTable(v2Options)
+        if (table.schema() != v1Table.schema ||
+          !table.partitioning().sameElements(partitioning)) {
+          throw new IllegalArgumentException("The table metadata has been updated externally, " +
+            s"please re-create table ${v1Table.qualifiedName}")
+        }
+        table
+    }
+  }
+}

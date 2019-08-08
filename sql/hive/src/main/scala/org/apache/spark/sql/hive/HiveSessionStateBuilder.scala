@@ -71,11 +71,12 @@ class HiveSessionStateBuilder(session: SparkSession, parentState: Option[Session
    */
   override protected def analyzer: Analyzer = new Analyzer(catalog, conf) {
     override val extendedResolutionRules: Seq[Rule[LogicalPlan]] =
-      new ResolveHiveSerdeTable(session) +:
+      DataSourceResolution(conf, this) +:
+        new ResolveInsertIntoStatement(conf) +:
+        new ResolveHiveSerdeTable(session) +:
         new FindDataSourceTable(session) +:
         new ResolveSQLOnFile(session) +:
         new FallBackFileSourceV2(session) +:
-        DataSourceResolution(conf, this) +:
         customResolutionRules
 
     override val postHocResolutionRules: Seq[Rule[LogicalPlan]] =

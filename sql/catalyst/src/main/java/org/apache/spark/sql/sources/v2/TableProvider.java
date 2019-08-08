@@ -18,6 +18,7 @@
 package org.apache.spark.sql.sources.v2;
 
 import org.apache.spark.annotation.Evolving;
+import org.apache.spark.sql.catalog.v2.expressions.Transform;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 
@@ -44,17 +45,21 @@ public interface TableProvider {
   Table getTable(CaseInsensitiveStringMap options);
 
   /**
-   * Return a {@link Table} instance to do read/write with user-specified schema and options.
+   * Return a {@link Table} instance to do read/write with user-specified schema and partitions.
    * <p>
    * By default this method throws {@link UnsupportedOperationException}, implementations should
-   * override this method to handle user-specified schema.
+   * override this method to handle user-specified schema and partitions.
    * </p>
    * @param options the user-specified options that can identify a table, e.g. file path, Kafka
    *                topic name, etc. It's an immutable case-insensitive string-to-string map.
    * @param schema the user-specified schema.
+   * @param partitions the user-specified partitions.
    * @throws UnsupportedOperationException
    */
-  default Table getTable(CaseInsensitiveStringMap options, StructType schema) {
+  default Table getTable(
+      CaseInsensitiveStringMap options,
+      StructType schema,
+      Transform[] partitions) {
     throw new UnsupportedOperationException(
       this.getClass().getSimpleName() + " source does not support user-specified schema");
   }

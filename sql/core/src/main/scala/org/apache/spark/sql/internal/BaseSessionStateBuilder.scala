@@ -168,10 +168,11 @@ abstract class BaseSessionStateBuilder(
    */
   protected def analyzer: Analyzer = new Analyzer(catalog, conf) {
     override val extendedResolutionRules: Seq[Rule[LogicalPlan]] =
-      new FindDataSourceTable(session) +:
+      DataSourceResolution(conf, this) +:
+        new ResolveInsertIntoStatement(conf) +:
+        new FindDataSourceTable(session) +:
         new ResolveSQLOnFile(session) +:
         new FallBackFileSourceV2(session) +:
-        DataSourceResolution(conf, this) +:
         customResolutionRules
 
     override val postHocResolutionRules: Seq[Rule[LogicalPlan]] =

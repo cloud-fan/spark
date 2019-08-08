@@ -25,13 +25,13 @@ import org.apache.spark.sql.{AnalysisException, SaveMode}
 import org.apache.spark.sql.catalog.v2.{CatalogPlugin, Identifier, LookupCatalog, TableCatalog}
 import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.CastSupport
+import org.apache.spark.sql.catalyst.analysis.{CastSupport, UnresolvedV2Table}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable, CatalogTableType, CatalogUtils, UnresolvedCatalogRelation}
-import org.apache.spark.sql.catalyst.plans.logical.{CreateTableAsSelect, CreateV2Table, DropTable, LogicalPlan, ReplaceTable, ReplaceTableAsSelect}
-import org.apache.spark.sql.catalyst.plans.logical.sql.{AlterTableAddColumnsStatement, AlterTableSetLocationStatement, AlterTableSetPropertiesStatement, AlterTableUnsetPropertiesStatement, AlterViewSetPropertiesStatement, AlterViewUnsetPropertiesStatement, CreateTableAsSelectStatement, CreateTableStatement, DescribeColumnStatement, DescribeTableStatement, DropTableStatement, DropViewStatement, QualifiedColType, ReplaceTableAsSelectStatement, ReplaceTableStatement}
+import org.apache.spark.sql.catalyst.plans.logical.{CreateTableAsSelect, CreateV2Table, DropTable, InsertIntoTable, LogicalPlan, ReplaceTable, ReplaceTableAsSelect}
+import org.apache.spark.sql.catalyst.plans.logical.sql.{AlterTableAddColumnsStatement, AlterTableSetLocationStatement, AlterTableSetPropertiesStatement, AlterTableUnsetPropertiesStatement, AlterViewSetPropertiesStatement, AlterViewUnsetPropertiesStatement, CreateTableAsSelectStatement, CreateTableStatement, DescribeColumnStatement, DescribeTableStatement, DropTableStatement, DropViewStatement, InsertIntoStatement, QualifiedColType, ReplaceTableAsSelectStatement, ReplaceTableStatement}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.command.{AlterTableAddColumnsCommand, AlterTableSetLocationCommand, AlterTableSetPropertiesCommand, AlterTableUnsetPropertiesCommand, DescribeColumnCommand, DescribeTableCommand, DropTableCommand}
-import org.apache.spark.sql.execution.datasources.v2.{CatalogTableAsV2, DataSourceV2Relation}
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, V2SessionCatalog}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.v2.TableProvider
 import org.apache.spark.sql.types.{HIVE_TYPE_STRING, HiveStringType, MetadataBuilder, StructField, StructType}
@@ -48,6 +48,24 @@ case class DataSourceResolution(
       .getOrElse(throw new AnalysisException("No v2 session catalog implementation is available"))
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+    case i @ InsertIntoStatement(
+        relation @ DataSourceV2Relation(UnresolvedV2Table(v1Table), _, _), _, _, _, _) =>
+      // A sanity check. This is guaranteed by `SessionCatalog.lookupRelation`.
+      assert(v1Table.provider.isDefined)
+      val table = v1Table.provider.get match {
+        case V1WriteProvider(_) => UnresolvedCatalogRelation(v1Table)
+        case _ => relation.copy(table = V2SessionCatalog.convertV1TableToV2(v1Table, conf))
+      }
+      i.copy(table = table)
+
+    case relation @ DataSourceV2Relation(UnresolvedV2Table(v1Table), _, _) =>
+      // A sanity check. This is guaranteed by `SessionCatalog.lookupRelation`.
+      assert(v1Table.provider.isDefined)
+      v1Table.provider.get match {
+        case V1ReadProvider(_) => UnresolvedCatalogRelation(v1Table)
+        case _ => relation.copy(table = V2SessionCatalog.convertV1TableToV2(v1Table, conf))
+      }
+
     case CreateTableStatement(
         AsTableIdentifier(table), schema, partitionCols, bucketSpec, properties,
         V1WriteProvider(provider), options, location, comment, ifNotExists) =>
@@ -171,10 +189,6 @@ case class DataSourceResolution(
         if newColumns.forall(_.name.size == 1) =>
       // only top-level adds are supported using AlterTableAddColumnsCommand
       AlterTableAddColumnsCommand(table, newColumns.map(convertToStructField))
-
-    case DataSourceV2Relation(CatalogTableAsV2(catalogTable), _, _) =>
-      UnresolvedCatalogRelation(catalogTable)
-
   }
 
   object V1WriteProvider {
@@ -185,12 +199,29 @@ case class DataSourceResolution(
       if (v1WriteOverrideSet.contains(provider.toLowerCase(Locale.ROOT))) {
         Some(provider)
       } else {
-        lazy val providerClass = DataSource.lookupDataSource(provider, conf)
-        provider match {
-          case _ if classOf[TableProvider].isAssignableFrom(providerClass) =>
-            None
-          case _ =>
-            Some(provider)
+        val providerClass = DataSource.lookupDataSource(provider, conf)
+        if (classOf[TableProvider].isAssignableFrom(providerClass)) {
+          None
+        } else {
+          Some(provider)
+        }
+      }
+    }
+  }
+
+  object V1ReadProvider {
+    private val v1ReadOverrideSet =
+      conf.useV1SourceReaderList.toLowerCase(Locale.ROOT).split(",").toSet
+
+    def unapply(provider: String): Option[String] = {
+      if (v1ReadOverrideSet.contains(provider.toLowerCase(Locale.ROOT))) {
+        Some(provider)
+      } else {
+        val providerClass = DataSource.lookupDataSource(provider, conf)
+        if (classOf[TableProvider].isAssignableFrom(providerClass)) {
+          None
+        } else {
+          Some(provider)
         }
       }
     }

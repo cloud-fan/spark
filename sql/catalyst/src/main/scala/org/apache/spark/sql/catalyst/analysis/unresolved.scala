@@ -17,8 +17,11 @@
 
 package org.apache.spark.sql.catalyst.analysis
 
+import java.util
+
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow, TableIdentifier}
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.errors.TreeNodeException
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
@@ -26,6 +29,7 @@ import org.apache.spark.sql.catalyst.parser.ParserUtils
 import org.apache.spark.sql.catalyst.plans.logical.{LeafNode, LogicalPlan, UnaryNode}
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.catalyst.util.quoteIdentifier
+import org.apache.spark.sql.sources.v2.{Table, TableCapability}
 import org.apache.spark.sql.types.{DataType, Metadata, StructType}
 
 /**
@@ -520,4 +524,16 @@ case class UnresolvedOrdinal(ordinal: Int)
   override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
   override def nullable: Boolean = throw new UnresolvedException(this, "nullable")
   override lazy val resolved = false
+}
+
+/**
+ * A special [[Table]] implementation. It's actually a wrapper of [[CatalogTable]], and must be
+ * replaced before actual query execution.
+ */
+case class UnresolvedV2Table(v1Table: CatalogTable) extends Table {
+  override def name(): String = v1Table.qualifiedName
+
+  override def schema(): StructType = v1Table.schema
+
+  override def capabilities(): util.Set[TableCapability] = new util.HashSet[TableCapability]()
 }

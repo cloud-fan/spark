@@ -216,6 +216,9 @@ case class DataSourceAnalysis(conf: SQLConf) extends Rule[LogicalPlan] with Cast
 /**
  * Replaces [[UnresolvedCatalogRelation]] with concrete relation logical plans.
  *
+ * This rule must be run after `DataSourceResolution`, so that Data Source V2 tables can be
+ * resolved first.
+ *
  * TODO: we should remove the special handling for hive tables after completely making hive as a
  * data source.
  */

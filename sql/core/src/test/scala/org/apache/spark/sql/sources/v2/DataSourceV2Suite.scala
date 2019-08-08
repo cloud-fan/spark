@@ -27,6 +27,7 @@ import test.org.apache.spark.sql.sources.v2._
 
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2Relation}
 import org.apache.spark.sql.execution.exchange.{Exchange, ShuffleExchangeExec}
@@ -565,7 +566,10 @@ class SchemaRequiredDataSource extends TableProvider {
     throw new IllegalArgumentException("requires a user-supplied schema")
   }
 
-  override def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
+  override def getTable(
+      options: CaseInsensitiveStringMap,
+      schema: StructType,
+      partitions: Array[Transform]): Table = {
     val userGivenSchema = schema
     new SimpleBatchTable {
       override def schema(): StructType = userGivenSchema

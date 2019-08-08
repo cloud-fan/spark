@@ -188,7 +188,7 @@ final class DataStreamReader private[sql](sparkSession: SparkSession) extends Lo
         val options = sessionOptions ++ extraOptions
         val dsOptions = new CaseInsensitiveStringMap(options.asJava)
         val table = userSpecifiedSchema match {
-          case Some(schema) => provider.getTable(dsOptions, schema)
+          case Some(schema) => provider.getTable(dsOptions, schema, Array.empty)
           case _ => provider.getTable(dsOptions)
         }
         import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Implicits._
