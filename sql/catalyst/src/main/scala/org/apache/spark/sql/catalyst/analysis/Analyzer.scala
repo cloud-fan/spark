@@ -171,7 +171,6 @@ class Analyzer(
       ResolveAlterTable ::
       ResolveDescribeTable ::
       ResolveInsertInto ::
-      ResolveTables ::
       ResolveRelations ::
       ResolveReferences ::
       ResolveCreateNamedStruct ::
@@ -636,30 +635,6 @@ class Analyzer(
   }
 
   /**
-   * Resolve table relations with concrete relations from v2 catalog.
-   *
-   * [[ResolveRelations]] still resolves v1 tables.
-   */
-  object ResolveTables extends Rule[LogicalPlan] {
-    import org.apache.spark.sql.catalog.v2.utils.CatalogV2Util._
-
-    def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
-      case u @ UnresolvedRelation(AsTemporaryViewIdentifier(ident))
-          if catalog.isTemporaryTable(ident) =>
-        u // temporary views take precedence over catalog table names
-
-      case u @ UnresolvedRelation(CatalogObjectIdentifier(maybeCatalog, ident)) =>
-        maybeCatalog.orElse(sessionCatalog)
-          .flatMap(loadTable(_, ident))
-          .map {
-            case unresolved: UnresolvedTable => u
-            case resolved => DataSourceV2Relation.create(resolved)
-          }
-          .getOrElse(u)
-    }
-  }
-
-  /**
    * Replaces [[UnresolvedRelation]]s with concrete relations from the catalog.
    */
   object ResolveRelations extends Rule[LogicalPlan] {
@@ -726,14 +701,37 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
-      case i @ InsertIntoTable(u @ UnresolvedRelation(AsTableIdentifier(ident)), _, child, _, _)
-          if child.resolved =>
-        EliminateSubqueryAliases(lookupTableFromCatalog(ident, u)) match {
-          case v: View =>
-            u.failAnalysis(s"Inserting into a view is not allowed. View: ${v.desc.identifier}.")
-          case other => i.copy(table = other)
+      case i @ InsertIntoStatement(u: UnresolvedRelation, _, _, _, _) if i.query.resolved =>
+        tryResolveV2Table(u).map(v2Relation => i.copy(table = v2Relation)).getOrElse {
+          u.multipartIdentifier match {
+            case AsTableIdentifier(ident) =>
+              EliminateSubqueryAliases(lookupTableFromCatalog(ident, u)) match {
+                case v: View => u.failAnalysis(
+                  s"Inserting into a view is not allowed. View: ${v.desc.identifier}.")
+                case other => InsertIntoTable(
+                  other, i.partitionSpec, i.query, i.overwrite, i.ifPartitionNotExists)
+              }
+
+            case _ => i
+          }
         }
-      case u: UnresolvedRelation => resolveRelation(u)
+
+      case u: UnresolvedRelation =>
+        tryResolveV2Table(u).getOrElse(resolveRelation(u))
+    }
+
+    private def tryResolveV2Table(u: UnresolvedRelation): Option[DataSourceV2Relation] = {
+      u.multipartIdentifier match {
+        // temporary views take precedence over catalog table names
+        case AsTemporaryViewIdentifier(ident) if catalog.isTemporaryTable(ident) =>
+          None
+
+        case CatalogObjectIdentifier(maybeCatalog, ident) =>
+          maybeCatalog.orElse(sessionCatalog)
+            .flatMap(loadTable(_, ident))
+            .filterNot(_.isInstanceOf[UnresolvedTable])
+            .map(DataSourceV2Relation.create)
+      }
     }
 
     // Look up the table with the given name from catalog. The database we used is decided by the
@@ -770,40 +768,29 @@ class Analyzer(
 
   object ResolveInsertInto extends Rule[LogicalPlan] {
     override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-      case i @ InsertIntoStatement(
-          UnresolvedRelation(CatalogObjectIdentifier(Some(tableCatalog), ident)), _, _, _, _)
-          if i.query.resolved =>
-        loadTable(tableCatalog, ident)
-            .map(DataSourceV2Relation.create)
-            .map(relation => {
-              // ifPartitionNotExists is append with validation, but validation is not supported
-              if (i.ifPartitionNotExists) {
-                throw new AnalysisException(
-                  s"Cannot write, IF NOT EXISTS is not supported for table: ${relation.table.name}")
-              }
+      case i @ InsertIntoStatement(r: DataSourceV2Relation, _, _, _, _) if i.query.resolved =>
+        // ifPartitionNotExists is append with validation, but validation is not supported
+        if (i.ifPartitionNotExists) {
+          throw new AnalysisException(
+            s"Cannot write, IF NOT EXISTS is not supported for table: ${r.table.name}")
+        }
 
-              val partCols = partitionColumnNames(relation.table)
-              validatePartitionSpec(partCols, i.partitionSpec)
+        val partCols = partitionColumnNames(r.table)
+        validatePartitionSpec(partCols, i.partitionSpec)
 
-              val staticPartitions = i.partitionSpec.filter(_._2.isDefined).mapValues(_.get)
-              val query = addStaticPartitionColumns(relation, i.query, staticPartitions)
-              val dynamicPartitionOverwrite = partCols.size > staticPartitions.size &&
-                  conf.partitionOverwriteMode == PartitionOverwriteMode.DYNAMIC
+        val staticPartitions = i.partitionSpec.filter(_._2.isDefined).mapValues(_.get)
+        val query = addStaticPartitionColumns(r, i.query, staticPartitions)
+        val dynamicPartitionOverwrite = partCols.size > staticPartitions.size &&
+          conf.partitionOverwriteMode == PartitionOverwriteMode.DYNAMIC
 
-              if (!i.overwrite) {
-                AppendData.byPosition(relation, query)
-              } else if (dynamicPartitionOverwrite) {
-                OverwritePartitionsDynamic.byPosition(relation, query)
-              } else {
-                OverwriteByExpression.byPosition(
-                  relation, query, staticDeleteExpression(relation, staticPartitions))
-              }
-            })
-            .getOrElse(i)
-
-      case i @ InsertIntoStatement(UnresolvedRelation(AsTableIdentifier(_)), _, _, _, _)
-          if i.query.resolved =>
-        InsertIntoTable(i.table, i.partitionSpec, i.query, i.overwrite, i.ifPartitionNotExists)
+        if (!i.overwrite) {
+          AppendData.byPosition(r, query)
+        } else if (dynamicPartitionOverwrite) {
+          OverwritePartitionsDynamic.byPosition(r, query)
+        } else {
+          OverwriteByExpression.byPosition(
+            r, query, staticDeleteExpression(r, staticPartitions))
+        }
     }
 
     private def partitionColumnNames(table: Table): Seq[String] = {

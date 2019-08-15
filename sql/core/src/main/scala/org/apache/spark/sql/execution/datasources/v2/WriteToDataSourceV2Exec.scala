@@ -80,11 +80,11 @@ case class CreateTableAsSelectExec(
     }
 
     Utils.tryWithSafeFinallyAndFailureCallbacks({
-      catalog.createTable(
-        ident, query.schema, partitioning.toArray, properties.asJava) match {
+      val schema = query.schema.asNullable
+      catalog.createTable(ident, schema, partitioning.toArray, properties.asJava) match {
         case table: SupportsWrite =>
           val batchWrite = table.newWriteBuilder(writeOptions)
-            .withInputDataSchema(query.schema)
+            .withInputDataSchema(schema)
             .withQueryId(UUID.randomUUID().toString)
             .buildForBatch()
 
@@ -128,7 +128,7 @@ case class AtomicCreateTableAsSelectExec(
       throw new TableAlreadyExistsException(ident)
     }
     val stagedTable = catalog.stageCreate(
-      ident, query.schema, partitioning.toArray, properties.asJava)
+      ident, query.schema.asNullable, partitioning.toArray, properties.asJava)
     writeToStagedTable(stagedTable, writeOptions, ident)
   }
 }

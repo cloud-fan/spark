@@ -16,6 +16,7 @@
  */
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
+import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2._
@@ -35,10 +36,12 @@ class ParquetDataSourceV2 extends FileDataSourceV2 {
     ParquetTable(tableName, sparkSession, options, paths, None, fallbackFileFormat)
   }
 
-  override def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
+  override def getTable(
+      options: CaseInsensitiveStringMap,
+      schema: StructType,
+      partitions: Array[Transform]): Table = {
     val paths = getPaths(options)
     val tableName = getTableName(paths)
     ParquetTable(tableName, sparkSession, options, paths, Some(schema), fallbackFileFormat)
   }
 }
-

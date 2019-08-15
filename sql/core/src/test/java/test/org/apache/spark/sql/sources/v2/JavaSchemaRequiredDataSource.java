@@ -17,6 +17,7 @@
 
 package test.org.apache.spark.sql.sources.v2;
 
+import org.apache.spark.sql.catalog.v2.expressions.Transform;
 import org.apache.spark.sql.sources.v2.Table;
 import org.apache.spark.sql.sources.v2.TableProvider;
 import org.apache.spark.sql.sources.v2.reader.*;
@@ -45,7 +46,10 @@ public class JavaSchemaRequiredDataSource implements TableProvider {
   }
 
   @Override
-  public Table getTable(CaseInsensitiveStringMap options, StructType schema) {
+  public Table getTable(
+        CaseInsensitiveStringMap options,
+        StructType schema,
+        Transform[] partitions) {
     return new JavaSimpleBatchTable() {
 
       @Override

@@ -16,6 +16,7 @@
  */
 package org.apache.spark.sql.execution.datasources.v2.json
 
+import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.v2._
@@ -35,10 +36,12 @@ class JsonDataSourceV2 extends FileDataSourceV2 {
     JsonTable(tableName, sparkSession, options, paths, None, fallbackFileFormat)
   }
 
-  override def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
+  override def getTable(
+      options: CaseInsensitiveStringMap,
+      schema: StructType,
+      partitions: Array[Transform]): Table = {
     val paths = getPaths(options)
     val tableName = getTableName(paths)
     JsonTable(tableName, sparkSession, options, paths, Some(schema), fallbackFileFormat)
   }
 }
-

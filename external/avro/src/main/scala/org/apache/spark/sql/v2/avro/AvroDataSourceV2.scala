@@ -17,6 +17,7 @@
 package org.apache.spark.sql.v2.avro
 
 import org.apache.spark.sql.avro.AvroFileFormat
+import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.v2.FileDataSourceV2
 import org.apache.spark.sql.sources.v2.Table
@@ -35,7 +36,10 @@ class AvroDataSourceV2 extends FileDataSourceV2 {
     AvroTable(tableName, sparkSession, options, paths, None, fallbackFileFormat)
   }
 
-  override def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
+  override def getTable(
+      options: CaseInsensitiveStringMap,
+      schema: StructType,
+      partitions: Array[Transform]): Table = {
     val paths = getPaths(options)
     val tableName = getTableName(paths)
     AvroTable(tableName, sparkSession, options, paths, Some(schema), fallbackFileFormat)

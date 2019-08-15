@@ -16,6 +16,7 @@
  */
 package org.apache.spark.sql.execution.datasources.v2.text
 
+import org.apache.spark.sql.catalog.v2.expressions.Transform
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.text.TextFileFormat
 import org.apache.spark.sql.execution.datasources.v2.FileDataSourceV2
@@ -35,10 +36,12 @@ class TextDataSourceV2 extends FileDataSourceV2 {
     TextTable(tableName, sparkSession, options, paths, None, fallbackFileFormat)
   }
 
-  override def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
+  override def getTable(
+      options: CaseInsensitiveStringMap,
+      schema: StructType,
+      partitions: Array[Transform]): Table = {
     val paths = getPaths(options)
     val tableName = getTableName(paths)
     TextTable(tableName, sparkSession, options, paths, Some(schema), fallbackFileFormat)
   }
 }
-

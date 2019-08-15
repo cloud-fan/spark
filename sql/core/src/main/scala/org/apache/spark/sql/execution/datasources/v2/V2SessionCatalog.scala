@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchT
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable, CatalogTableType, CatalogUtils, SessionCatalog}
 import org.apache.spark.sql.execution.datasources.DataSource
 import org.apache.spark.sql.internal.SessionState
-import org.apache.spark.sql.sources.v2.Table
+import org.apache.spark.sql.sources.v2.{Table, TableProvider}
 import org.apache.spark.sql.sources.v2.internal.UnresolvedTable
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -63,6 +63,66 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
     }
   }
 
+  override def tableExists(ident: Identifier): Boolean = {
+    if (ident.namespace().length <= 1) {
+      catalog.tableExists(ident.asTableIdentifier)
+    } else {
+      false
+    }
+  }
+
+  private def convertV1TableToV2(provider: TableProvider, v1Table: CatalogTable): Table = {
+    val options: Map[String, String] = {
+      v1Table.storage.locationUri match {
+        case Some(uri) =>
+          v1Table.storage.properties + ("path" -> uri.toString)
+        case _ =>
+          v1Table.storage.properties
+      }
+    }
+
+    val partitioning: Array[Transform] = {
+      val partitions = new mutable.ArrayBuffer[Transform]()
+
+      v1Table.partitionColumnNames.foreach { col =>
+        partitions += LogicalExpressions.identity(col)
+      }
+
+      v1Table.bucketSpec.foreach { spec =>
+        partitions += LogicalExpressions.bucket(spec.numBuckets, spec.bucketColumnNames: _*)
+      }
+
+      partitions.toArray
+    }
+
+    val v2Options = new CaseInsensitiveStringMap(options.asJava)
+
+    // First, we assume the `TableProvider` implementation can accept user-specified table
+    // metadata. If the assumption is wrong, we get table via options directly, and make sure
+    // the returned table reports the same metadata with the one in Spark's builtin catalog.
+    try {
+      provider.getTable(v2Options, v1Table.schema, partitioning)
+    } catch {
+      case _: UnsupportedOperationException =>
+        // If the table can't accept user-specified schema and partitions, get the table via
+        // options directly.
+        val table = provider.getTable(v2Options)
+        if (table.schema() != v1Table.schema) {
+          throw new MetadataChangedException("The table schema has been updated " +
+            s"externally, please re-create table ${v1Table.qualifiedName}.\n" +
+            s"Old schema: ${v1Table.schema}\n" +
+            s"New schema: ${table.schema()}")
+        }
+        if (!table.partitioning().sameElements(partitioning)) {
+          throw new MetadataChangedException("The table partitioning has been updated " +
+            s"externally, please re-create table ${v1Table.qualifiedName}.\n" +
+            s"Old partitioning: ${partitioning.mkString(", ")}\n" +
+            s"New partitioning: ${table.partitioning().mkString(", ")}")
+        }
+        table
+    }
+  }
+
   override def loadTable(ident: Identifier): Table = {
     val catalogTable = try {
       catalog.getTableMetadata(ident.asTableIdentifier)
@@ -71,7 +131,13 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
         throw new NoSuchTableException(ident)
     }
 
-    UnresolvedTable(catalogTable)
+    if (catalogTable.provider.isDefined) {
+      DataSource.lookupDataSourceV2(catalogTable.provider.get, sessionState.conf).map { provider =>
+        convertV1TableToV2(provider, catalogTable)
+      }.getOrElse(UnresolvedTable(catalogTable))
+    } else {
+      UnresolvedTable(catalogTable)
+    }
   }
 
   override def invalidateTable(ident: Identifier): Unit = {
@@ -84,8 +150,21 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
       partitions: Array[Transform],
       properties: util.Map[String, String]): Table = {
 
-    val (partitionColumns, maybeBucketSpec) = V2SessionCatalog.convertTransforms(partitions)
     val provider = properties.getOrDefault("provider", sessionState.conf.defaultDataSourceName)
+    val (actualSchema, actualPartitions) = if (schema.isEmpty && partitions.isEmpty) {
+      // If `CREATE TABLE ... USING` does not specify table metadata, get the table metadata from
+      // data source first.
+      val tableProvider = DataSource.lookupDataSourceV2(provider, sessionState.conf)
+      // A sanity check. This is guaranteed by `DataSourceResolution`.
+      assert(tableProvider.isDefined)
+
+      val table = tableProvider.get.getTable(new CaseInsensitiveStringMap(properties))
+      table.schema() -> table.partitioning()
+    } else {
+      schema -> partitions
+    }
+
+    val (partitionColumns, maybeBucketSpec) = V2SessionCatalog.convertTransforms(actualPartitions)
     val tableProperties = properties.asScala
     val location = Option(properties.get("location"))
     val storage = DataSource.buildStorageFormatFromOptions(tableProperties.toMap)
@@ -96,7 +175,7 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
       identifier = ident.asTableIdentifier,
       tableType = tableType,
       storage = storage,
-      schema = schema,
+      schema = actualSchema,
       provider = Some(provider),
       partitionColumnNames = partitionColumns,
       bucketSpec = maybeBucketSpec,
@@ -111,7 +190,13 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
         throw new TableAlreadyExistsException(ident)
     }
 
-    loadTable(ident)
+    try {
+      loadTable(ident)
+    } catch {
+      case e: MetadataChangedException =>
+        dropTable(ident)
+        throw e
+    }
   }
 
   override def alterTable(
@@ -138,19 +223,14 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
   }
 
   override def dropTable(ident: Identifier): Boolean = {
-    try {
-      if (loadTable(ident) != null) {
-        catalog.dropTable(
-          ident.asTableIdentifier,
-          ignoreIfNotExists = true,
-          purge = true /* skip HDFS trash */)
-        true
-      } else {
-        false
-      }
-    } catch {
-      case _: NoSuchTableException =>
-        false
+    if (tableExists(ident)) {
+      catalog.dropTable(
+        ident.asTableIdentifier,
+        ignoreIfNotExists = true,
+        purge = true /* skip HDFS trash */)
+      true
+    } else {
+      false
     }
   }
 
@@ -180,7 +260,9 @@ class V2SessionCatalog(sessionState: SessionState) extends TableCatalog {
   override def toString: String = s"V2SessionCatalog($name)"
 }
 
-private[sql] object V2SessionCatalog {
+class MetadataChangedException(message: String) extends Exception(message)
+
+object V2SessionCatalog {
   /**
    * Convert v2 Transforms to v1 partition columns and an optional bucket spec.
    */
