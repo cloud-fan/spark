@@ -29,6 +29,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.TestingUDT.{IntervalUDT, NullData, NullUDT}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetTable
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
@@ -38,7 +39,9 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 
 
-class FileBasedDataSourceSuite extends QueryTest with SharedSparkSession {
+class FileBasedDataSourceSuite extends QueryTest
+  with SharedSparkSession
+  with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   override def beforeAll(): Unit = {
@@ -702,21 +705,21 @@ class FileBasedDataSourceSuite extends QueryTest with SharedSparkSession {
           val df2FromFile = spark.read.orc(workDirPath + "/data2")
           val joinedDF = df1FromFile.join(df2FromFile, Seq("count"))
           if (compressionFactor == 0.5) {
-            val bJoinExec = joinedDF.queryExecution.executedPlan.collect {
+            val bJoinExec = collect(joinedDF.queryExecution.executedPlan) {
               case bJoin: BroadcastHashJoinExec => bJoin
             }
             assert(bJoinExec.nonEmpty)
-            val smJoinExec = joinedDF.queryExecution.executedPlan.collect {
+            val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
               case smJoin: SortMergeJoinExec => smJoin
             }
             assert(smJoinExec.isEmpty)
           } else {
             // compressionFactor is 1.0
-            val bJoinExec = joinedDF.queryExecution.executedPlan.collect {
+            val bJoinExec = collect(joinedDF.queryExecution.executedPlan) {
               case bJoin: BroadcastHashJoinExec => bJoin
             }
             assert(bJoinExec.isEmpty)
-            val smJoinExec = joinedDF.queryExecution.executedPlan.collect {
+            val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
               case smJoin: SortMergeJoinExec => smJoin
             }
             assert(smJoinExec.nonEmpty)
