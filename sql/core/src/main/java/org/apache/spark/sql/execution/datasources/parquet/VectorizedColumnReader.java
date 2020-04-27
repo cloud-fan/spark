@@ -179,12 +179,13 @@ public class VectorizedColumnReader {
         defColumn.readIntegers(
             num, dictionaryIds, column, rowId, maxDefLevel, (VectorizedValuesReader) dataColumn);
 
-        // TIMESTAMP_MILLIS encoded as INT64 can't be lazily decoded as we need to post process
-        // the values to add microseconds precision.
         if (column.hasDictionary() || (rowId == 0 &&
             (typeName == PrimitiveType.PrimitiveTypeName.INT32 ||
+            // TIMESTAMP_MILLIS, or reading int64 as timestamp, needs to post process the values
+            // to add microseconds precision, so can't be lazily decoded.
             (typeName == PrimitiveType.PrimitiveTypeName.INT64 &&
-              originalType != OriginalType.TIMESTAMP_MILLIS) ||
+              (originalType == OriginalType.TIMESTAMP_MICROS ||
+                column.dataType() != DataTypes.TimestampType)) ||
             typeName == PrimitiveType.PrimitiveTypeName.FLOAT ||
             typeName == PrimitiveType.PrimitiveTypeName.DOUBLE ||
             typeName == PrimitiveType.PrimitiveTypeName.BINARY))) {
@@ -298,7 +299,9 @@ public class VectorizedColumnReader {
               column.putLong(i, dictionary.decodeToLong(dictionaryIds.getDictId(i)));
             }
           }
-        } else if (originalType == OriginalType.TIMESTAMP_MILLIS) {
+        } else if (originalType == OriginalType.TIMESTAMP_MILLIS ||
+            column.dataType() == DataTypes.TimestampType) {
+          // Before Spark 3.0, we can read int64 as timestamp, assuming it's milliseconds.
           for (int i = rowId; i < rowId + num; ++i) {
             if (!column.isNullAt(i)) {
               column.putLong(i,
@@ -462,7 +465,9 @@ public class VectorizedColumnReader {
         defColumn.readLongs(
           num, column, rowId, maxDefLevel, (VectorizedValuesReader) dataColumn);
       }
-    } else if (originalType == OriginalType.TIMESTAMP_MILLIS) {
+    } else if (originalType == OriginalType.TIMESTAMP_MILLIS ||
+        column.dataType() == DataTypes.TimestampType) {
+      // Before Spark 3.0, we can read int64 as timestamp, assuming it's milliseconds.
       if (rebaseDateTime) {
         for (int i = 0; i < num; i++) {
           if (defColumn.readInteger() == maxDefLevel) {

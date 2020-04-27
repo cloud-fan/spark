@@ -290,23 +290,6 @@ private[parquet] class ParquetRowConverter(
           }
         }
 
-      case TimestampType if parquetType.getOriginalType == OriginalType.TIMESTAMP_MILLIS =>
-        if (rebaseDateTime) {
-          new ParquetPrimitiveConverter(updater) {
-            override def addLong(value: Long): Unit = {
-              val micros = DateTimeUtils.millisToMicros(value)
-              val rebased = rebaseJulianToGregorianMicros(micros)
-              updater.setLong(rebased)
-            }
-          }
-        } else {
-          new ParquetPrimitiveConverter(updater) {
-            override def addLong(value: Long): Unit = {
-              updater.setLong(DateTimeUtils.millisToMicros(value))
-            }
-          }
-        }
-
       // INT96 timestamp doesn't have a logical type, here we check the physical type instead.
       case TimestampType if parquetType.asPrimitiveType().getPrimitiveTypeName == INT96 =>
         new ParquetPrimitiveConverter(updater) {
@@ -324,6 +307,24 @@ private[parquet] class ParquetRowConverter(
             val adjTime = convertTz.map(DateTimeUtils.convertTz(rawTime, _, ZoneOffset.UTC))
               .getOrElse(rawTime)
             updater.setLong(adjTime)
+          }
+        }
+
+      // Before Spark 3.0, we can read int64 as timestamp, assuming it's milliseconds.
+      case TimestampType if parquetType.asPrimitiveType().getPrimitiveTypeName == INT64 =>
+        if (rebaseDateTime) {
+          new ParquetPrimitiveConverter(updater) {
+            override def addLong(value: Long): Unit = {
+              val micros = DateTimeUtils.millisToMicros(value)
+              val rebased = rebaseJulianToGregorianMicros(micros)
+              updater.setLong(rebased)
+            }
+          }
+        } else {
+          new ParquetPrimitiveConverter(updater) {
+            override def addLong(value: Long): Unit = {
+              updater.setLong(DateTimeUtils.millisToMicros(value))
+            }
           }
         }
 

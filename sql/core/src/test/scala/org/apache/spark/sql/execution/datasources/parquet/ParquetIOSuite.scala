@@ -18,7 +18,6 @@
 package org.apache.spark.sql.execution.datasources.parquet
 
 import java.sql.{Date, Timestamp}
-import java.time._
 import java.util.Locale
 
 import scala.collection.JavaConverters._
@@ -177,6 +176,28 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
       data.write.parquet(dir.getCanonicalPath)
       readParquetFile(dir.getCanonicalPath) { df =>
         checkAnswer(df, data.collect().toSeq)
+      }
+    }
+  }
+
+  test("int64 as timestamp type") {
+    Seq(true, false).foreach { vectorized =>
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
+        withTempPath { path =>
+          spark.range(10).write.parquet(path.getCanonicalPath)
+          val df = spark.read.schema("id timestamp").parquet(path.getCanonicalPath)
+          // checkAnswer(df, 0.until(10).map(new Timestamp(_)).map(Row(_)))
+        }
+
+        // test with nullable column
+        withTempPath { path =>
+          spark.range(10).selectExpr("if(id = 0, null, id) as id")
+            .write.parquet(path.getCanonicalPath)
+          val df = spark.read.schema("id timestamp").parquet(path.getCanonicalPath)
+          checkAnswer(df, 0.until(10).map { i =>
+            if (i == 0) null else new Timestamp(i)
+          }.map(Row(_)))
+        }
       }
     }
   }
