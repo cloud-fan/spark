@@ -2,66 +2,66 @@
 Benchmark to measure CSV read/write performance
 ================================================================================================
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Parsing quoted values:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-One quoted string                                 24073          24109          33          0.0      481463.5       1.0X
+One quoted string                                 50365          50545         181          0.0     1007301.7       1.0X
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Wide rows with 1000 columns:              Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-Select 1000 columns                               58415          59611        2071          0.0       58414.8       1.0X
-Select 100 columns                                22568          23020         594          0.0       22568.0       2.6X
-Select one column                                 18995          19058          99          0.1       18995.0       3.1X
-count()                                            5301           5332          30          0.2        5300.9      11.0X
-Select 100 columns, one bad input field           39736          40153         361          0.0       39736.1       1.5X
-Select 100 columns, corrupt record field          47195          47826         590          0.0       47195.2       1.2X
+Select 1000 columns                              129858         130769        1301          0.0      129858.1       1.0X
+Select 100 columns                                43649          43745          84          0.0       43649.5       3.0X
+Select one column                                 36793          36916         112          0.0       36793.0       3.5X
+count()                                           11083          11104          21          0.1       11083.5      11.7X
+Select 100 columns, one bad input field           95846          96170         281          0.0       95845.8       1.4X
+Select 100 columns, corrupt record field         116239         116548         331          0.0      116238.7       1.1X
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Count a dataset with 10 columns:          Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-Select 10 columns + count()                        9884           9904          25          1.0         988.4       1.0X
-Select 1 column + count()                          6794           6835          46          1.5         679.4       1.5X
-count()                                            2060           2065           5          4.9         206.0       4.8X
+Select 10 columns + count()                       20952          21014          93          0.5        2095.2       1.0X
+Select 1 column + count()                         14359          14409          50          0.7        1435.9       1.5X
+count()                                            3821           3836          15          2.6         382.1       5.5X
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Write dates and timestamps:               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-Create a dataset of timestamps                      717            732          18         14.0          71.7       1.0X
-to_csv(timestamp)                                  6994           7100         121          1.4         699.4       0.1X
-write timestamps to files                          6417           6435          27          1.6         641.7       0.1X
-Create a dataset of dates                           827            855          24         12.1          82.7       0.9X
-to_csv(date)                                       4408           4438          32          2.3         440.8       0.2X
-write dates to files                               3738           3758          28          2.7         373.8       0.2X
+Create a dataset of timestamps                     1961           1976          14          5.1         196.1       1.0X
+to_csv(timestamp)                                 14411          14846         539          0.7        1441.1       0.1X
+write timestamps to files                         12874          12979         128          0.8        1287.4       0.2X
+Create a dataset of dates                          2183           2199          18          4.6         218.3       0.9X
+to_csv(date)                                       8638           8670          42          1.2         863.8       0.2X
+write dates to files                               6943           6952           9          1.4         694.3       0.3X
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Read dates and timestamps:                Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-read timestamp text from files                     1121           1176          52          8.9         112.1       1.0X
-read timestamps from files                        21298          21366         105          0.5        2129.8       0.1X
-infer timestamps from files                       41008          41051          39          0.2        4100.8       0.0X
-read date text from files                           962            967           5         10.4          96.2       1.2X
-read date from files                              11749          11772          22          0.9        1174.9       0.1X
-infer date from files                             12426          12459          29          0.8        1242.6       0.1X
-timestamp strings                                  1508           1519           9          6.6         150.8       0.7X
-parse timestamps from Dataset[String]             21674          21997         455          0.5        2167.4       0.1X
-infer timestamps from Dataset[String]             42141          42230         105          0.2        4214.1       0.0X
-date strings                                       1694           1701           8          5.9         169.4       0.7X
-parse dates from Dataset[String]                  12929          12951          25          0.8        1292.9       0.1X
-from_csv(timestamp)                               20603          20786         166          0.5        2060.3       0.1X
-from_csv(date)                                    12325          12338          12          0.8        1232.5       0.1X
+read timestamp text from files                     2239           2242           5          4.5         223.9       1.0X
+read timestamps from files                        64486          64664         162          0.2        6448.6       0.0X
+infer timestamps from files                      120125         120694         700          0.1       12012.5       0.0X
+read date text from files                          1960           1962           3          5.1         196.0       1.1X
+read date from files                              28291          28365          66          0.4        2829.1       0.1X
+infer date from files                             28653          28707          74          0.3        2865.3       0.1X
+timestamp strings                                  3719           3731          17          2.7         371.9       0.6X
+parse timestamps from Dataset[String]             75005          75363         521          0.1        7500.5       0.0X
+infer timestamps from Dataset[String]            146329         147061         634          0.1       14632.9       0.0X
+date strings                                       3732           3744          11          2.7         373.2       0.6X
+parse dates from Dataset[String]                  33797          33966         279          0.3        3379.7       0.1X
+from_csv(timestamp)                               74924          75170         301          0.1        7492.4       0.0X
+from_csv(date)                                    31235          31387         133          0.3        3123.5       0.1X
 
-Java HotSpot(TM) 64-Bit Server VM 1.8.0_231-b11 on Mac OS X 10.15.4
-Intel(R) Core(TM) i9-9980HK CPU @ 2.40GHz
+OpenJDK 64-Bit Server VM 1.8.0_252-8u252-b09-1~18.04-b09 on Linux 4.15.0-1063-aws
+Intel(R) Xeon(R) CPU E5-2670 v2 @ 2.50GHz
 Filters pushdown:                         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------
-w/o filters                                       12455          12474          22          0.0      124553.8       1.0X
-pushdown disabled                                 12462          12486          29          0.0      124624.9       1.0X
-w/ filters                                         1073           1092          18          0.1       10727.6      11.6X
+w/o filters                                       33160          33216          53          0.0      331598.7       1.0X
+pushdown disabled                                 33335          33364          42          0.0      333353.6       1.0X
+w/ filters                                         1873           1877           4          0.1       18726.0      17.7X
 
 
