@@ -363,4 +363,12 @@ class JoinReorderSuite extends JoinReorderPlanTestBase with StatsEstimationTestB
 
     assertEqualJoinPlans(Optimize, originalPlan3, bestPlan3)
   }
+
+  test("with self-join") {
+    val query = t2.join(t1, Inner, Some(nameToAttr("t1.k-1-2") === nameToAttr("t2.k-1-5")))
+      .select(nameToAttr("t1.v-1-10"))
+      .join(t2, Inner, Some(nameToAttr("t1.v-1-10") === nameToAttr("t2.k-1-5")))
+    println(query.analyze.treeString)
+    println(Optimize.execute(query.analyze))
+  }
 }
