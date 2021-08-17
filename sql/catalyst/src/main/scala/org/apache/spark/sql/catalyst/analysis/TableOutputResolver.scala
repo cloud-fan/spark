@@ -77,8 +77,12 @@ object TableOutputResolver {
       val matched = inputCols.filter(col => conf.resolver(col.name, expectedCol.name))
       val newColPath = colPath :+ expectedCol.name
       if (matched.isEmpty) {
-        addError(s"Cannot find data for output column '${newColPath.quoted}'")
-        None
+        if (expectedCol.nullable) {
+          Some(Alias(Literal(null, expectedCol.dataType), expectedCol.name)())
+        } else {
+          addError(s"Cannot find data for output column '${newColPath.quoted}'")
+          None
+        }
       } else if (matched.length > 1) {
         addError(s"Ambiguous column name in the input data: '${newColPath.quoted}'")
         None
