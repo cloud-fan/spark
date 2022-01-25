@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.catalyst.types.PhysicalStringType
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 import org.apache.spark.sql.catalyst.util.DateTimeConstants._
 import org.apache.spark.sql.internal.SQLConf
@@ -493,6 +494,9 @@ abstract class HashExpression[E] extends Expression {
       genHashForMap(ctx, input, result, kt, vt, valueContainsNull)
     case StructType(fields) => genHashForStruct(ctx, input, result, fields)
     case udt: UserDefinedType[_] => computeHashWithTailRec(input, udt.sqlType, result, ctx)
+    case _ => dataType.physicalDataType match {
+      case PhysicalStringType => genHashString(input, result)
+    }
   }
 
   protected def computeHash(

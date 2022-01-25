@@ -43,6 +43,7 @@ import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, Scala
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.trees.TreePattern
 import org.apache.spark.sql.catalyst.trees.TreePattern.{LITERAL, NULL_LITERAL, TRUE_OR_FALSE_LITERAL}
+import org.apache.spark.sql.catalyst.types.PhysicalStringType
 import org.apache.spark.sql.catalyst.util._
 import org.apache.spark.sql.catalyst.util.DateTimeUtils.instantToMicros
 import org.apache.spark.sql.catalyst.util.IntervalStringStyles.ANSI_STYLE
@@ -236,7 +237,10 @@ object Literal {
         }
       case ObjectType(cls) => cls.isInstance(v)
       case udt: UserDefinedType[_] => doValidate(v, udt.sqlType)
-      case _ => false
+      case _ =>
+        dataType.physicalDataType match {
+          case PhysicalStringType => v.isInstanceOf[UTF8String]
+        }
     }
     require(doValidate(value, dataType),
       s"Literal must have a corresponding value to ${dataType.catalogString}, " +

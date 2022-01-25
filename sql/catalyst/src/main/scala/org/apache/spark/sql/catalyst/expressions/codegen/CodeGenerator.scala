@@ -39,6 +39,7 @@ import org.apache.spark.metrics.source.CodegenMetrics
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.catalyst.types.PhysicalStringType
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, SQLOrderingUtil}
 import org.apache.spark.sql.catalyst.util.DateTimeConstants.NANOS_PER_MILLIS
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -1637,7 +1638,11 @@ object CodeGenerator extends Logging {
       case _: MapType => s"$input.getMap($ordinal)"
       case NullType => "null"
       case udt: UserDefinedType[_] => getValue(input, udt.sqlType, ordinal)
-      case _ => s"($jt)$input.get($ordinal, null)"
+      case _ =>
+        dataType.physicalDataType match {
+          case PhysicalStringType => s"$input.getUTF8String($ordinal)"
+          case _ => s"($jt)$input.get($ordinal, null)"
+        }
     }
   }
 
@@ -1918,7 +1923,10 @@ object CodeGenerator extends Logging {
     case udt: UserDefinedType[_] => javaType(udt.sqlType)
     case ObjectType(cls) if cls.isArray => s"${javaType(ObjectType(cls.getComponentType))}[]"
     case ObjectType(cls) => cls.getName
-    case _ => "Object"
+    case _ =>
+      dt.physicalDataType match {
+        case PhysicalStringType => "UTF8String"
+      }
   }
 
   @tailrec

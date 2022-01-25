@@ -2795,3 +2795,25 @@ case class Sentences(
     copy(str = newFirst, language = newSecond, country = newThird)
 
 }
+
+case class GenerateIP(child: Expression) extends UnaryExpression with ExpectsInputTypes {
+  override def inputTypes: Seq[AbstractDataType] = Seq(StringType)
+  override def dataType: DataType = IPAddressType
+  override def withNewChildInternal(newChild: Expression): Expression = copy(child = newChild)
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = child.genCode(ctx)
+  override def nullSafeEval(input: Any): Any = input
+}
+
+case class ProcessIP(child: Expression) extends UnaryExpression with ExpectsInputTypes {
+  override def inputTypes: Seq[AbstractDataType] = Seq(IPAddressType)
+  override def dataType: DataType = IPAddressType
+  override def withNewChildInternal(newChild: Expression): Expression = copy(child = newChild)
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    defineCodeGen(ctx, ev, (string) => {
+      s"$string.substringSQL(0, 2)"
+    })
+  }
+  override def nullSafeEval(input: Any): Any = {
+    input.asInstanceOf[UTF8String].substring(0, 2)
+  }
+}

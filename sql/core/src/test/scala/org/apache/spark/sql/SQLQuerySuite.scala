@@ -62,6 +62,20 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
 
   setupTestData()
 
+  test("ip") {
+    val df = sql("SELECT process_ip(generate_ip('abc'))")
+    df.show()
+    df.collect()
+
+    sql("SELECT generate_ip('abc') = generate_ip('abc')").show()
+    sql("SELECT generate_ip('abc') = generate_ip('xyz')").show()
+
+    withTable("t") {
+      sql("CREATE TABLE t USING JSON AS SELECT 'abc' s")
+      sql("SELECT process_ip(generate_ip(s)) FROM t GROUP BY generate_ip(s)").show()
+    }
+  }
+
   test("SPARK-8010: promote numeric to string") {
     withTempView("src") {
       val df = Seq((1, 1)).toDF("key", "value")

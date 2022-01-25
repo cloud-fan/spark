@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.SerializerBuildHelper._
 import org.apache.spark.sql.catalyst.analysis.GetColumnByOrdinal
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects._
+import org.apache.spark.sql.catalyst.types.PhysicalStringType
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, ArrayData}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
@@ -204,6 +205,10 @@ object RowEncoder {
       } else {
         nonNullOutput
       }
+
+    case _ => inputType.physicalDataType match {
+      case PhysicalStringType => createSerializerForString(inputObject)
+    }
   }
 
   /**
@@ -249,6 +254,9 @@ object RowEncoder {
     case _: StructType => ObjectType(classOf[Row])
     case p: PythonUserDefinedType => externalDataTypeFor(p.sqlType)
     case udt: UserDefinedType[_] => ObjectType(udt.userClass)
+    case _ => dt.physicalDataType match {
+      case PhysicalStringType => ObjectType(classOf[java.lang.String])
+    }
   }
 
   private def deserializerFor(input: Expression, schema: StructType): Expression = {
@@ -347,6 +355,10 @@ object RowEncoder {
       If(IsNull(input),
         Literal.create(null, externalDataTypeFor(input.dataType)),
         CreateExternalRow(convertedFields, schema))
+
+    case _ => dataType.physicalDataType match {
+      case PhysicalStringType => createDeserializerForString(input, returnNullable = false)
+    }
   }
 
   private def expressionForNullableExpr(

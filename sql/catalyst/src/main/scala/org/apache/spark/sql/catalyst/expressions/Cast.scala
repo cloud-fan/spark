@@ -343,6 +343,8 @@ abstract class CastBase extends UnaryExpression with TimeZoneAwareExpression wit
 
   // UDFToString
   private[this] def castToString(from: DataType): Any => Any = from match {
+    case IPAddressType =>
+      buildCast[UTF8String](_, s => s)
     case CalendarIntervalType =>
       buildCast[CalendarInterval](_, i => UTF8String.fromString(i.toString))
     case BinaryType => buildCast[Array[Byte]](_, UTF8String.fromBytes)
@@ -1194,6 +1196,8 @@ abstract class CastBase extends UnaryExpression with TimeZoneAwareExpression wit
   @scala.annotation.tailrec
   private[this] def castToStringCode(from: DataType, ctx: CodegenContext): CastFunction = {
     from match {
+      case IPAddressType =>
+        (c, evPrim, evNull) => code"$evPrim = $c;"
       case BinaryType =>
         (c, evPrim, evNull) => code"$evPrim = UTF8String.fromBytes($c);"
       case DateType =>

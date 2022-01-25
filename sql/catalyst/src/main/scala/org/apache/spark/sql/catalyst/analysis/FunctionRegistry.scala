@@ -321,6 +321,9 @@ object FunctionRegistry {
 
   // Note: Whenever we add a new entry here, make sure we also update ExpressionToSQLSuite
   val expressions: Map[String, (ExpressionInfo, FunctionBuilder)] = Map(
+    expression[GenerateIP]("generate_ip"),
+    expression[ProcessIP]("process_ip"),
+
     // misc non-aggregate functions
     expression[Abs]("abs"),
     expression[Coalesce]("coalesce"),
