@@ -2270,6 +2270,23 @@ object SQLConf {
     .booleanConf
     .createWithDefault(false)
 
+  val MAX_ALIAS_REPLACEMENT_PROJECT_LIST_SIZE =
+    buildConf("spark.sql.optimizer.maxAliasReplacementProjectListSize")
+      .doc("Alias replacement will be skipped if the number of aliased expressions in a " +
+        "Project plan exceeds this threshold, which can potentially lead to missing some " +
+        "optimization opportunities but will not affect correctness.")
+      .intConf
+      .createWithDefault(100)
+
+  val MAX_ALIAS_REPLACEMENT_PROJECTED_EXPRESSIONS_LIST_SIZE =
+    buildConf("spark.sql.optimizer.maxAliasReplacementProjectedExpressionsListSize")
+      .doc("Alias replacement will be stopped if the number of candidate expressions, when " +
+        "trying to replace aliased expressions with corresponding aliases, exceeds this " +
+        "threshold. This can lead to missing some optimization opportunities but will not " +
+        "affect correctness.")
+      .intConf
+      .createWithDefault(500)
+
   val FILE_SINK_LOG_DELETION = buildConf("spark.sql.streaming.fileSink.log.deletion")
     .internal()
     .doc("Whether to delete the expired log files in file stream sink.")
