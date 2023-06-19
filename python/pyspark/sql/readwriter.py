@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 import sys
-from typing import cast, overload, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import cast, overload, Dict, Iterable, List, Optional, Tuple, Type, TYPE_CHECKING, Union
 
 from py4j.java_gateway import JavaClass, JavaObject
 
@@ -23,6 +23,7 @@ from pyspark import RDD, since
 from pyspark.sql.column import _to_seq, _to_java_column, Column
 from pyspark.sql.types import StructType
 from pyspark.sql import utils
+from pyspark.sql.datasource import DataSource
 from pyspark.sql.utils import to_str
 from pyspark.errors import PySparkTypeError, PySparkValueError
 
@@ -54,6 +55,113 @@ class OptionUtils:
                 self.option(k, v)  # type: ignore[attr-defined]
 
 
+class PyDataSourceReader:
+
+    _format: Type[DataSource] = None
+    _schema: Union[StructType, str] = None
+    _options: Dict[str, str] = None
+
+    def __init__(self):
+        self._options = dict()
+
+    def format(self, source: Type[DataSource]) -> None:
+        self._format = source
+
+    def schema(self, schema: Union[StructType, str]) -> None:
+        self._schema = schema
+
+    def option(self, key: str, value: str) -> None:
+        self._options[key] = value
+
+    def load(self, path: Optional[PathOrPaths]) -> "DataFrame":
+        """Loads data from the data source."""
+        from typing import Any
+        # TODO: handle multiple paths
+        if path is not None:
+            if "path" in self._options:
+                    raise Exception("Cannot have an option named `path`.")
+            self._options["path"] = path
+
+        data_source_cls = self._format
+        source = data_source_cls(schema=self._schema, options=self._options)
+
+        # Get the schema
+        schema = source.getSchema()
+
+        # Get the data source reader
+        reader = source.getReader()
+
+        # Get partitions of the data reader
+        try:
+            partitions = reader.getPartitions()
+        except Exception as e:
+            raise PySparkValueError(f"Failed to get partitions: {str(e)}")
+        if partitions is None:
+            raise PySparkValueError(
+                f"Data source reader's partitions cannot be None."
+                f"If the data source does not have partitions, please do not implement this function or"
+                f"return an empty list of partitions.")
+
+        # Partitions must be an ordered iterable.
+        if not isinstance(partitions, Iterable):
+            raise PySparkValueError(f"The partitions are not iterable: {partitions}")
+        if type(partitions) is dict:
+            raise PySparkValueError(f"The partitions cannot be an unordered dictionary: {partitions}")
+
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession._getActiveSessionOrCreate()
+        sc = spark.sparkContext
+
+        assert sc._jvm is not None
+
+        # Serialize partitions
+        # TODO: this is not working
+        from pyspark.serializers import CloudPickleSerializer
+
+        ser = CloudPickleSerializer()
+
+        pickled_partitions = []
+        for partition in partitions:
+            pickled = ser.dumps(partition)
+            if len(pickled) > sc._jvm.PythonUtils.getBroadcastThreshold(sc._jsc):  # Default 1M
+                raise PySparkValueError(f"Unable to pickle partition {partition}: size too large")
+            pickled_partitions.append(bytearray(ser.dumps(partition)))
+
+        from pyspark.sql.functions import udtf
+
+        # Construct a UDTF based data frame reader.
+        class DataSourceReaderFunction:
+            def __init__(self):
+                self.reader = reader
+
+            def eval(self, partition=None):
+                # TODO: currently we do not support partitioned scan.
+                yield from self.reader.read(partition)
+
+        assert sc._jvm is not None
+
+        # Construct a UDTF to read the non-partitioned data
+        udtf = udtf(DataSourceReaderFunction, returnType=schema)
+
+        # Construct a data source reader to read partitioned data
+        # TODO: this is not working
+        from pyspark.sql.udf import _wrap_function
+
+        wrapped_reader = _wrap_function(sc, DataSourceReaderFunction, schema)
+        return_type = udtf.returnType
+        jdt = spark._jsparkSession.parseDataType(return_type.json())
+        jsource = sc._jvm.org.apache.spark.sql.execution.python.UserDefinedPythonDataSourceReader(
+            wrapped_reader,
+            jdt,
+            pickled_partitions
+        )
+
+        return jsource.apply(spark._jsparkSession)
+
+        # return udtf()
+
+
 class DataFrameReader(OptionUtils):
     """
     Interface used to load a :class:`DataFrame` from external storage systems
@@ -68,6 +176,8 @@ class DataFrameReader(OptionUtils):
 
     def __init__(self, spark: "SparkSession"):
         self._jreader = spark._jsparkSession.read()
+        self._pyreader = PyDataSourceReader()
+        self._is_py_source = False
         self._spark = spark
 
     def _df(self, jdf: JavaObject) -> "DataFrame":
@@ -75,7 +185,7 @@ class DataFrameReader(OptionUtils):
 
         return DataFrame(jdf, self._spark)
 
-    def format(self, source: str) -> "DataFrameReader":
+    def format(self, source: Union[str, Type[DataSource]]) -> "DataFrameReader":
         """Specifies the input data source format.
 
         .. versionadded:: 1.4.0
@@ -110,7 +220,12 @@ class DataFrameReader(OptionUtils):
         |100|Hyukjin Kwon|
         +---+------------+
         """
-        self._jreader = self._jreader.format(source)
+        if isinstance(source, str):
+            self._jreader = self._jreader.format(source)
+        else:
+            # Python data source
+            self._pyreader.format(source)
+            self._is_py_source = True
         return self
 
     def schema(self, schema: Union[StructType, str]) -> "DataFrameReader":
@@ -151,8 +266,11 @@ class DataFrameReader(OptionUtils):
         if isinstance(schema, StructType):
             jschema = spark._jsparkSession.parseDataType(schema.json())
             self._jreader = self._jreader.schema(jschema)
+            # Also store it for python
+            self._pyreader.schema(schema)
         elif isinstance(schema, str):
             self._jreader = self._jreader.schema(schema)
+            self._pyreader.schema(schema)
         else:
             raise PySparkTypeError(
                 error_class="NOT_STR_OR_STRUCT",
@@ -202,6 +320,7 @@ class DataFrameReader(OptionUtils):
         +---+----+
         """
         self._jreader = self._jreader.option(key, to_str(value))
+        self._pyreader.option(key, to_str(value))
         return self
 
     def options(self, **options: "OptionalPrimitiveType") -> "DataFrameReader":
@@ -244,7 +363,9 @@ class DataFrameReader(OptionUtils):
         +---+----+
         """
         for k in options:
-            self._jreader = self._jreader.option(k, to_str(options[k]))
+            value = to_str(options[k])
+            self._jreader = self._jreader.option(k, value)
+            self._pyreader.option(k, value)
         return self
 
     def load(
@@ -303,6 +424,11 @@ class DataFrameReader(OptionUtils):
         if schema is not None:
             self.schema(schema)
         self.options(**options)
+
+        # Python data source
+        if self._is_py_source:
+            return self._pyreader.load(path)
+
         if isinstance(path, str):
             return self._df(self._jreader.load(path))
         elif path is not None:

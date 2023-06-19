@@ -17,10 +17,14 @@
 
 package org.apache.spark.sql.execution.python
 
+import java.util.{List => JList}
+
+import scala.collection.JavaConverters._
+
 import org.apache.spark.api.python.{PythonEvalType, PythonFunction}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Expression, PythonUDAF, PythonUDF, PythonUDTF}
-import org.apache.spark.sql.catalyst.plans.logical.{Generate, LogicalPlan, OneRowRelation}
+import org.apache.spark.sql.catalyst.plans.logical.{Generate, LogicalPlan, OneRowRelation, PythonDataSourcePartition}
 import org.apache.spark.sql.types.{DataType, StructType}
 
 /**
@@ -87,5 +91,36 @@ case class UserDefinedPythonTableFunction(
   def apply(session: SparkSession, exprs: Column*): DataFrame = {
     val udtf = builder(exprs.map(_.expr))
     Dataset.ofRows(session, udtf)
+  }
+}
+
+case class UserDefinedPythonDataSourceReader(
+    reader: PythonFunction,
+    schema: StructType,
+    partitions: JList[Array[Byte]]) {
+
+  def builder(): LogicalPlan = {
+    val udtf = PythonUDTF(
+      name = "DataSourceReaderFunction",
+      func = reader,
+      elementSchema = schema,
+      children = Nil,
+      udfDeterministic = true)
+    val dataSourcePartition = PythonDataSourcePartition(partitions.asScala.toSeq)
+    val generate = Generate(
+      udtf,
+      unrequiredChildIndex = Nil,
+      outer = false,
+      qualifier = None,
+      generatorOutput = Nil,
+      child = dataSourcePartition
+    )
+    // TODO: need to add a projection on top of generate to filter out partition columns.
+    generate
+  }
+
+  def apply(session: SparkSession): DataFrame = {
+    val source = builder()
+    Dataset.ofRows(session, source)
   }
 }
