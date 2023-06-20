@@ -47,7 +47,6 @@ class DataSourceTestsMixin:
 
         df.show()
 
-    @unittest.skip
     def test_simple_data_source_with_partitions(self):
         class InMemoryDataSource(DataSource):
 
@@ -62,13 +61,13 @@ class DataSourceTestsMixin:
                 return iter([1, 2])
 
             def read(self, partition: int):
+                print(partition)
                 return [(partition, 0), (partition, 1)]
 
         df = self.spark.read.format(InMemoryDataSource).load()
 
         df.show()
 
-    @unittest.skip
     def test_github_data_source(self):
         from pyspark.sql.types import StructType, ArrayType, IntegerType, StringType
         from typing import Any, Iterator
@@ -85,8 +84,6 @@ class DataSourceTestsMixin:
             def read(self, year: int) -> Iterator[Any]:
                 """Fetches the pull requests for a specific year and yields them."""
                 repo = self.options["path"]
-                # TODO: support partitions
-                year = 2023
                 url = f"https://api.github.com/search/issues?q=repo:{repo}+type:pr+created:{year}-01-01..{year}-12-31"
                 response = requests.get(url)
                 prs = json.loads(response.text)

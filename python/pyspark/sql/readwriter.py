@@ -21,7 +21,10 @@ from py4j.java_gateway import JavaClass, JavaObject
 
 from pyspark import RDD, since
 from pyspark.sql.column import _to_seq, _to_java_column, Column
-from pyspark.sql.types import StructType
+from pyspark.sql.types import (
+    StructType,
+    _parse_datatype_string,
+)
 from pyspark.sql import utils
 from pyspark.sql.datasource import DataSource
 from pyspark.sql.utils import to_str
@@ -87,6 +90,8 @@ class PyDataSourceReader:
 
         # Get the schema
         schema = source.getSchema()
+        if isinstance(schema, str):
+          schema = _parse_datatype_string(schema)
 
         # Get the data source reader
         reader = source.getReader()
@@ -134,9 +139,10 @@ class PyDataSourceReader:
         class DataSourceReaderFunction:
             def __init__(self):
                 self.reader = reader
+                self.ser = CloudPickleSerializer()
 
-            def eval(self, partition=None):
-                # TODO: currently we do not support partitioned scan.
+            def eval(self, partitionBytes):
+                partition = ser.loads(partitionBytes)
                 yield from self.reader.read(partition)
 
         assert sc._jvm is not None

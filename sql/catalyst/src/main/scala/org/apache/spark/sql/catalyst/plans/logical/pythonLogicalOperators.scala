@@ -21,7 +21,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expre
 import org.apache.spark.sql.catalyst.trees.TreePattern._
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.streaming.{GroupStateTimeout, OutputMode}
-import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
+import org.apache.spark.sql.types.{BinaryType, StructType}
 
 /**
  * FlatMap groups using a udf: pandas.Dataframe -> pandas.DataFrame.
@@ -227,11 +227,11 @@ case class AttachDistributedSequence(
   }
 }
 
-case class PythonDataSourcePartition(partitions: Seq[Array[Byte]]) extends LeafNode {
-  override val output: Seq[Attribute] = {
-    val schema = StructType(Array(StructField("partition", BinaryType)))
-    schema.toAttributes
-  }
+case class PythonDataSourcePartition(output: Seq[Attribute], partitions: Seq[Array[Byte]])
+  extends LeafNode {
+
+  def this(partitions: Seq[Array[Byte]]) =
+    this(new StructType().add("partition", BinaryType).toAttributes, partitions)
 
   override protected def stringArgs: Iterator[Any] = {
     if (partitions.isEmpty) {

@@ -100,13 +100,13 @@ case class UserDefinedPythonDataSourceReader(
     partitions: JList[Array[Byte]]) {
 
   def builder(): LogicalPlan = {
+    val dataSourcePartition = new PythonDataSourcePartition(partitions.asScala.toSeq)
     val udtf = PythonUDTF(
       name = "DataSourceReaderFunction",
       func = reader,
       elementSchema = schema,
-      children = Nil,
+      children = dataSourcePartition.output,
       udfDeterministic = true)
-    val dataSourcePartition = PythonDataSourcePartition(partitions.asScala.toSeq)
     val generate = Generate(
       udtf,
       unrequiredChildIndex = Nil,

@@ -44,7 +44,11 @@ case class PythonDataSourcePartitionExec(
   @transient private lazy val rdd: RDD[InternalRow] = {
     // partitions can be empty?
     val numPartitions = partitions.size
-    sparkContext.parallelize(unsafeRows, numPartitions)
+    if (numPartitions == 0) {
+      sparkContext.emptyRDD
+    } else {
+      sparkContext.parallelize(unsafeRows, numPartitions)
+    }
   }
 
   override def inputRDD: RDD[InternalRow] = rdd
