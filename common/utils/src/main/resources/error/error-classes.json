@@ -4068,11 +4068,6 @@
       "The generator is not supported:"
     ],
     "subClass" : {
-      "MULTI_GENERATOR" : {
-        "message" : [
-          "only one generator allowed per <clause> clause but found <num>: <generators>."
-        ]
-      },
       "NESTED_IN_EXPRESSIONS" : {
         "message" : [
           "nested in expressions <expression>."

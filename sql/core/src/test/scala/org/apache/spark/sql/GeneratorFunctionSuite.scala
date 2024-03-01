@@ -553,6 +553,34 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
       checkAnswer(df, Row(0.7604953758285915d))
     }
   }
+
+  test("SPARK-47241: two generator functions in SELECT") {
+    def testTwoGenerators(needImplicitCast: Boolean): Unit = {
+      val df = sql(
+        s"""
+          |SELECT
+          |explode(array('a', 'b')) as c1,
+          |explode(array(0L, ${if (needImplicitCast) "0L + 1" else "1L"})) as c2
+          |""".stripMargin)
+      checkAnswer(df, Seq(Row("a", 0L), Row("a", 1L), Row("b", 0L), Row("b", 1L)))
+    }
+    testTwoGenerators(needImplicitCast = true)
+    testTwoGenerators(needImplicitCast = false)
+  }
+
+  test("SPARK-47241: SELECT * and generator functions") {
+    val df = sql(
+      s"""
+         |SELECT *,
+         |explode(array('a', 'b')) as c1,
+         |explode(sequence(0, 1)) as c2
+         |FROM
+         |(
+         |  SELECT id FROM range(1) GROUP BY 1
+         |)
+         |""".stripMargin)
+    checkAnswer(df, Seq(Row(0, "a", 0), Row(0, "a", 1), Row(0, "b", 0), Row(0, "b", 1)))
+  }
 }
 
 case class EmptyGenerator() extends Generator with LeafLike[Expression] {
