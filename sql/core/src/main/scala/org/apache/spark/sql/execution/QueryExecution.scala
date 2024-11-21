@@ -68,9 +68,15 @@ class QueryExecution(
   // TODO: Move the planner an optimizer into here from SessionState.
   protected def planner = sparkSession.sessionState.planner
 
-  lazy val isLazyAnalysis: Boolean = {
-    // Only check the main query as subquery expression can be resolved now with the main query.
-    logical.exists(_.expressions.exists(_.exists(_.isInstanceOf[LazyExpression])))
+  def isLazyAnalysis: Boolean = {
+    try {
+      analyzed
+      false
+    } catch {
+      case _: AnalysisException =>
+        // Only check the main query as subquery expression can be resolved now with the main query.
+        logical.exists(_.expressions.exists(_.exists(_.isInstanceOf[LazyExpression])))
+    }
   }
 
   def assertAnalyzed(): Unit = {
