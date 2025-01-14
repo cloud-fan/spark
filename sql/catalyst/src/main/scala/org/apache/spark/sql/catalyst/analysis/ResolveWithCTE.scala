@@ -20,8 +20,7 @@ package org.apache.spark.sql.catalyst.analysis
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
-import org.apache.spark.sql.catalyst.plans.logical.{CTERelationDef, CTERelationRef, Distinct, Except, LogicalPlan,
-  SubqueryAlias, Union, UnionLoop, UnionLoopRef, WithCTE}
+import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreePattern.{CTE, PLAN_EXPRESSION}
 import org.apache.spark.sql.errors.QueryCompilationErrors
@@ -46,53 +45,83 @@ object ResolveWithCTE extends Rule[LogicalPlan] {
       case withCTE @ WithCTE(_, cteDefs) =>
         val newCTEDefs = cteDefs.map {
           case cteDef if !cteDef.recursive =>
-            val newCTEDef = cteDef
-            if (newCTEDef.resolved) {
-              cteDefMap.put(newCTEDef.id, newCTEDef)
+            if (cteDef.resolved) {
+              cteDefMap.put(cteDef.id, cteDef)
             }
-            newCTEDef
+            cteDef
           case cteDef =>
-            val newCTEDef = {
+            if (hasRecursiveCTERef(cteDef.child, cteDef.id)) {
               cteDef.child match {
-                // Substitutions to UnionLoop and UnionLoopRef.
+                // If it's a supported recursive CTE query pattern, extract the anchor plan and
+                // rewrite Union with UnionLoop. The recursive CTE references inside UnionLoop will
+                // be rewritten as UnionLoopRef, using the output of the resolved anchor plan.
                 case alias @ SubqueryAlias(_, Union(Seq(anchor, recursion), false, false)) =>
-                  cteDef.copy(child =
-                    alias.copy(child =
-                      UnionLoop(cteDef.id, anchor, replaceSimpleRefsWithUnionLoopRefs(recursion))))
+                  if (!anchor.resolved) {
+                    cteDef
+                  } else {
+                    val loop = UnionLoop(
+                      cteDef.id,
+                      anchor,
+                      rewriteRecursiveCTERefs(recursion, anchor, cteDef.id, None))
+                    cteDef.copy(child = alias.copy(child = loop))
+                  }
+
                 case alias @ SubqueryAlias(_,
-                    columnAlias @ UnresolvedSubqueryColumnAliases(_,
-                    Union(Seq(anchor, recursion), false, false))) =>
-                  cteDef.copy(child =
-                    alias.copy(child =
-                      columnAlias.copy(child =
-                        UnionLoop(
-                            cteDef.id, anchor, replaceSimpleRefsWithUnionLoopRefs(recursion)))))
+                    columnAlias @ UnresolvedSubqueryColumnAliases(
+                      colNames,
+                      Union(Seq(anchor, recursion), false, false)
+                    )) =>
+                  if (!anchor.resolved) {
+                    cteDef
+                  } else {
+                    val loop = UnionLoop(
+                      cteDef.id,
+                      anchor,
+                      rewriteRecursiveCTERefs(recursion, anchor, cteDef.id, Some(colNames)))
+                    cteDef.copy(child = alias.copy(child = columnAlias.copy(child = loop)))
+                  }
+
                 // If the recursion is described with an UNION (deduplicating) clause then the
                 // recursive term should not return those rows that have been calculated previously,
                 // and we exclude those rows from the current iteration result.
                 case alias @ SubqueryAlias(_,
                     Distinct(Union(Seq(anchor, recursion), false, false))) =>
-                  cteDef.copy(child =
-                    alias.copy(child =
-                      UnionLoop(cteDef.id, Distinct(anchor),
-                        Except(
-                          replaceSimpleRefsWithUnionLoopRefs(recursion),
-                          UnionLoopRef(cteDef.id, cteDef.output, true),
-                          false))))
+                  if (!anchor.resolved) {
+                    cteDef
+                  } else {
+                    val loop = UnionLoop(
+                      cteDef.id,
+                      Distinct(anchor),
+                      Except(
+                        rewriteRecursiveCTERefs(recursion, anchor, cteDef.id, None),
+                        UnionLoopRef(cteDef.id, anchor.output, true),
+                        isAll = false
+                      )
+                    )
+                    cteDef.copy(child = alias.copy(child = loop))
+                  }
+
                 case alias @ SubqueryAlias(_,
-                    columnAlias @ UnresolvedSubqueryColumnAliases(_,
-                    Distinct(Union(Seq(anchor, recursion),
-                    false, false)))) =>
-                  cteDef.copy(child =
-                    alias.copy(child =
-                      columnAlias.copy(child =
-                        UnionLoop(cteDef.id,
-                          Distinct(anchor),
-                          Except(
-                            replaceSimpleRefsWithUnionLoopRefs(recursion),
-                            UnionLoopRef(cteDef.id, cteDef.output, true),
-                            false)))))
-                case _ =>
+                    columnAlias@UnresolvedSubqueryColumnAliases(
+                      colNames,
+                      Distinct(Union(Seq(anchor, recursion), false, false))
+                    )) =>
+                  if (!anchor.resolved) {
+                    cteDef
+                  } else {
+                    val loop = UnionLoop(
+                      cteDef.id,
+                      Distinct(anchor),
+                      Except(
+                        rewriteRecursiveCTERefs(recursion, anchor, cteDef.id, Some(colNames)),
+                        UnionLoopRef(cteDef.id, anchor.output, true),
+                        isAll = false
+                      )
+                    )
+                    cteDef.copy(child = alias.copy(child = columnAlias.copy(child = loop)))
+                  }
+
+                case other if !other.exists(_.isInstanceOf[UnionLoop]) =>
                   // We do not support cases of sole Union (needs a SubqueryAlias above it), nor
                   // Project (as UnresolvedSubqueryColumnAliases have not been substituted with the
                   // Project yet), leaving us with cases of SubqueryAlias->Union and SubqueryAlias->
@@ -100,45 +129,20 @@ object ResolveWithCTE extends Rule[LogicalPlan] {
                   throw QueryCompilationErrors.recursiveCteError(
                     "Unsupported recursive CTE UNION placement.")
               }
+            } else {
+              if (cteDef.resolved) {
+                cteDefMap.put(cteDef.id, cteDef)
+              }
+              cteDef
             }
-
-            // cteDefMap holds "partially" resolved (only via anchor) CTE definitions in the
-            // recursive case.
-            if (newCTEDef.resolved) {
-              throw QueryCompilationErrors.recursiveCteError(
-                "Attempting to resolve a recursive CTE which is already resolved.")
-            }
-            if (recursiveAnchorResolved(newCTEDef).isDefined) {
-              cteDefMap.put(newCTEDef.id, newCTEDef)
-            }
-            newCTEDef
         }
         withCTE.copy(cteDefs = newCTEDefs)
 
       case ref: CTERelationRef if !ref.resolved =>
-        cteDefMap.get(ref.cteId) match {
-          case Some(cteDef) if !ref.recursive =>
-            if (!cteDef.resolved) {
-              // In the non-recursive case, cteDefMap contains resolved Definitions.
-              throw QueryCompilationErrors.recursiveCteError(
-                "Unresolved non-recursive CTE with an unresolved CTE reference.")
-            }
-            ref.copy(_resolved = true, output = cteDef.output, isStreaming = cteDef.isStreaming)
-          case Some(cteDef) =>
-            // Recursive references can be resolved from the anchor term. Non-resolved ref implies
-            // non-resolved definition. Since the definition was present in the map of resolved and
-            // "partially" resolved definitions, the only explanation is that definition was
-            // "partially" resolved.
-            val anchorResolved = recursiveAnchorResolved(cteDef)
-            if (anchorResolved.isDefined) {
-              ref.copy(_resolved = true, output = anchorResolved.get.output,
-                isStreaming = cteDef.isStreaming)
-            } else {
-              throw QueryCompilationErrors.recursiveCteError(
-                "Resolving a recursive CTE where the anchor part is not resolved.")
-            }
-          case None =>
-            ref
+        cteDefMap.get(ref.cteId).map { cteDef =>
+          CTERelationRef(cteDef.id, cteDef.resolved, cteDef.output, cteDef.isStreaming)
+        }.getOrElse {
+          ref
         }
 
       case other =>
@@ -148,28 +152,24 @@ object ResolveWithCTE extends Rule[LogicalPlan] {
     }
   }
 
-  // Substitute CTERelationRef with UnionLoopRef.
-  private def replaceSimpleRefsWithUnionLoopRefs(plan: LogicalPlan) = {
-    plan.transformWithPruning(_.containsPattern(CTE)) {
-      case r: CTERelationRef if r.recursive =>
-        UnionLoopRef(r.cteId, r.output, false)
-    }
+  private def hasRecursiveCTERef(plan: LogicalPlan, cteId: Long): Boolean = plan match {
+    case ref: CTERelationRef => ref.recursive && ref.cteId == cteId
+    case other => other.expressions.filter(_.containsPattern(PLAN_EXPRESSION)).exists(_.exists {
+      case e: SubqueryExpression => hasRecursiveCTERef(e.plan, cteId)
+      case _ => false
+    }) || other.children.exists(hasRecursiveCTERef(_, cteId))
   }
 
-  // Update the definition's recursiveAnchor if the anchor is resolved.
-  private def recursiveAnchorResolved(cteDef: CTERelationDef): Option[LogicalPlan] = {
-    val ul = cteDef.child match {
-      case SubqueryAlias(_, ul: UnionLoop) => ul
-      case SubqueryAlias(_, Distinct(ul: UnionLoop)) => ul
-      case SubqueryAlias(_, UnresolvedSubqueryColumnAliases(_, ul: UnionLoop)) => ul
-      case SubqueryAlias(_, UnresolvedSubqueryColumnAliases(_, Distinct(ul: UnionLoop))) => ul
-      case _ =>
-        throw QueryCompilationErrors.recursiveCteError("Unsupported recursive CTE UNION placement.")
-    }
-    if (ul.anchor.resolved) {
-      Some(ul.anchor)
-    } else {
-      None
+  // Substitute CTERelationRef with UnionLoopRef.
+  private def rewriteRecursiveCTERefs(
+      plan: LogicalPlan,
+      anchor: LogicalPlan,
+      cteId: Long,
+      columnNames: Option[Seq[String]]) = {
+    plan.transformWithPruning(_.containsPattern(CTE)) {
+      case r: CTERelationRef if r.recursive && r.cteId == cteId =>
+        val ref = UnionLoopRef(r.cteId, anchor.output, false)
+        columnNames.map(UnresolvedSubqueryColumnAliases(_, ref)).getOrElse(ref)
     }
   }
 }
