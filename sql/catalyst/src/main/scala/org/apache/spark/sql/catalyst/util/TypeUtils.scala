@@ -136,4 +136,12 @@ object TypeUtils extends QueryErrorsBase {
     }
     if (dataType.existsRecursively(isInterval)) f
   }
+
+  def failUnsupportedDataTypes(
+      dataType: DataType,
+      timeTypeEnabled: Boolean): Unit = {
+    if (!timeTypeEnabled && dataType.existsRecursively(_.isInstanceOf[TimeType])) {
+      throw QueryCompilationErrors.unsupportedTimeTypeError()
+    }
+  }
 }
