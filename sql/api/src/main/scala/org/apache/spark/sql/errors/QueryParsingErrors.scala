@@ -845,4 +845,11 @@ private[sql] object QueryParsingErrors extends DataTypeErrorsBase {
       messageParameters = Map("parameterMarker" -> ctx.getText),
       ctx = ctx)
   }
+
+  def matchRecognizePartitionByMustBeNamedError(ctx: ParserRuleContext): Throwable = {
+    new ParseException(
+      errorClass = "MATCH_RECOGNIZE_PARTITION_BY_MUST_BE_NAMED",
+      messageParameters = Map("expression" -> ctx.getText),
+      ctx)
+  }
 }

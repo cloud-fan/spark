@@ -400,6 +400,33 @@ trait CheckAnalysis extends LookupCatalog with QueryErrorsBase with PlanToString
         // Early checks for column definitions, to produce better error messages
         ColumnDefinition.checkColumnDefinitions(operator)
 
+        // This runs before the general unresolved attribute check to provide better
+        // error messages for unresolved columns in MEASURES.
+        operator match {
+          case m: UnresolvedMatchRecognize =>
+            // Check for unresolved columns in measures with custom suggestions
+            m.measures.foreach { alias =>
+              alias.foreach {
+                case a: Attribute if !a.resolved =>
+                  val missingCol = a.sql
+                  val partitionCandidates = m.partitionSpec.map(ne => Seq(ne.name))
+                  val matchedRowsCandidates = m.matchedRowsAttrs.map(attr =>
+                    attr.qualifier :+ attr.name)
+                  val candidates = partitionCandidates ++ matchedRowsCandidates
+                  val orderedCandidates =
+                    StringUtils.orderSuggestedIdentifiersBySimilarity(missingCol, candidates)
+                  throw QueryCompilationErrors.unresolvedAttributeError(
+                    "UNRESOLVED_COLUMN", missingCol, orderedCandidates, a.origin)
+                case _ =>
+              }
+            }
+            // Other MATCH_RECOGNIZE checks (duplicate variables, undefined variables,
+            // pattern validity, measure expression validity) are done in ResolveMatchRecognize
+            // before transformation.
+
+          case _ =>
+        }
+
         var stagedError: Option[() => Unit] = None
         getAllExpressions(operator).foreach(_.foreachUp {
           case a: Attribute if !a.resolved =>

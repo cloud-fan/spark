@@ -2077,6 +2077,119 @@ class AstBuilder extends DataTypeAstBuilder
     }
 
   /**
+   * Add a [[MatchRecognize]] to a logical plan.
+   */
+  private def withMatchRecognize(
+      ctx: MatchRecognizeClauseContext,
+      query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
+    // Partition columns must be named expressions (column references or aliased expressions)
+    // since they appear in the output
+    val partitionSpec = Option(ctx.partitionCols).toSeq
+      .flatMap(_.namedExpression.asScala)
+      .map { exprCtx =>
+        val expr = visitNamedExpression(exprCtx)
+        expr match {
+          case _: MultiAlias =>
+            throw QueryParsingErrors.matchRecognizePartitionByMustBeNamedError(exprCtx)
+          case ne: NamedExpression => ne
+          case _ =>
+            throw QueryParsingErrors.matchRecognizePartitionByMustBeNamedError(exprCtx)
+        }
+      }
+
+    val orderSpec = ctx.orderCols.asScala.map { sortCtx =>
+      typedVisit[SortOrder](sortCtx)
+    }.toSeq
+
+    val measures = Option(ctx.measureCols).toSeq
+      .flatMap(_.aliasedExpression.asScala)
+      .map(visitAliasedExpression)
+
+    val pattern = visitRowPattern(ctx.patternDef)
+
+    val patternVariableDefinitions = ctx.definitionList.rowPatternDefinition.asScala.map {
+      defCtx =>
+        // Normalize variable name to lowercase for case-insensitive matching
+        val name = getIdentifierText(defCtx.name).toLowerCase(Locale.ROOT)
+        val condition = expression(defCtx.condition)
+        Alias(condition, name)()
+    }.toSeq
+
+    val result = UnresolvedMatchRecognize(
+      partitionSpec,
+      orderSpec,
+      pattern,
+      patternVariableDefinitions,
+      measures,
+      matchedRowsAttrs = Nil, // Populated during analysis
+      query)
+
+    // alias match_recognize result
+    if (ctx.errorCapturingIdentifier() != null) {
+      val alias = getIdentifierText(ctx.errorCapturingIdentifier())
+      SubqueryAlias(alias, result)
+    } else {
+      result
+    }
+  }
+
+  /**
+   * Visit a row pattern and convert it to a RowPattern AST.
+   * Handles alternation (|) and sequences.
+   */
+  override def visitRowPattern(ctx: RowPatternContext): RowPattern = withOrigin(ctx) {
+    val sequences = ctx.rowPatternSequence.asScala.map(visitRowPatternSequence).toSeq
+    if (sequences.length == 1) {
+      sequences.head
+    } else {
+      PatternAlternation(sequences)
+    }
+  }
+
+  /**
+   * Visit a row pattern sequence (terms without alternation).
+   */
+  override def visitRowPatternSequence(
+      ctx: RowPatternSequenceContext): RowPattern = withOrigin(ctx) {
+    val terms = ctx.rowPatternTerm.asScala.map(visitRowPatternTerm).toSeq
+    if (terms.length == 1) {
+      terms.head
+    } else {
+      PatternSequence(terms)
+    }
+  }
+
+  override def visitRowPatternTerm(ctx: RowPatternTermContext): RowPattern = withOrigin(ctx) {
+    val base = visitRowPatternFactor(ctx.rowPatternFactor)
+    if (ctx.rowPatternQuantifier != null) {
+      val quantifier = visitRowPatternQuantifierToQuantifier(ctx.rowPatternQuantifier)
+      val greedy = ctx.reluctant == null
+      QuantifiedPattern(base, quantifier, greedy)
+    } else {
+      base
+    }
+  }
+
+  override def visitRowPatternFactor(ctx: RowPatternFactorContext): RowPattern = withOrigin(ctx) {
+    if (ctx.identifier != null) {
+      // Normalize variable name to lowercase for case-insensitive matching
+      PatternVariable(getIdentifierText(ctx.identifier).toLowerCase(Locale.ROOT))
+    } else {
+      // Grouped pattern: (pattern)
+      visitRowPattern(ctx.rowPattern)
+    }
+  }
+
+  private def visitRowPatternQuantifierToQuantifier(
+      ctx: RowPatternQuantifierContext): PatternQuantifier = withOrigin(ctx) {
+    ctx match {
+      case _: ZeroOrMoreQuantifierContext => ZeroOrMore
+      case _: OneOrMoreQuantifierContext => OneOrMore
+      case _: ZeroOrOneQuantifierContext => ZeroOrOne
+    }
+  }
+
+  /**
    * Add a [[Generate]] (Lateral View) to a logical plan.
    */
   private def withGenerate(
@@ -2139,9 +2252,11 @@ class AstBuilder extends DataTypeAstBuilder
         withJoinRelation(extension.joinRelation(), left)
       } else if (extension.pivotClause() != null) {
         withPivot(extension.pivotClause(), left)
-      } else {
-        assert(extension.unpivotClause() != null)
+      } else if (extension.unpivotClause() != null) {
         withUnpivot(extension.unpivotClause(), left)
+      } else {
+        assert(extension.matchRecognizeClause() != null)
+        withMatchRecognize(extension.matchRecognizeClause(), left)
       }
     }
   }
@@ -2668,6 +2783,14 @@ class AstBuilder extends DataTypeAstBuilder
     } else {
       e
     }
+  }
+
+  /**
+   * Create an aliased expression. Unlike namedExpression, the alias is required.
+   * Used for MEASURES clause in MATCH_RECOGNIZE.
+   */
+  override def visitAliasedExpression(ctx: AliasedExpressionContext): Alias = withOrigin(ctx) {
+    Alias(expression(ctx.expression), getIdentifierText(ctx.name))()
   }
 
   /**

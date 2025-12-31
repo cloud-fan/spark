@@ -979,6 +979,53 @@ unpivotAlias
     : AS? errorCapturingIdentifier
     ;
 
+matchRecognizeClause
+    : MATCH_RECOGNIZE LEFT_PAREN
+        (PARTITION BY partitionCols=namedExpressionSeq)?
+        (ORDER BY orderCols+=sortItem (COMMA orderCols+=sortItem)*)?
+        (MEASURES measureCols=aliasedExpressionSeq)?
+        (ONE ROW PER MATCH)?
+        afterMatchSkipClause?
+        PATTERN LEFT_PAREN patternDef=rowPattern RIGHT_PAREN
+        DEFINE definitionList=rowPatternDefinitionSeq
+      RIGHT_PAREN (AS? errorCapturingIdentifier)?
+    ;
+
+afterMatchSkipClause
+    : AFTER MATCH KW_SKIP PAST LAST ROW
+    ;
+
+rowPattern
+    : rowPatternSequence (PIPE rowPatternSequence)*
+    ;
+
+rowPatternSequence
+    : rowPatternTerm+
+    ;
+
+rowPatternTerm
+    : rowPatternFactor (rowPatternQuantifier reluctant=QUESTION?)?
+    ;
+
+rowPatternFactor
+    : identifier
+    | LEFT_PAREN rowPattern RIGHT_PAREN
+    ;
+
+rowPatternQuantifier
+    : ASTERISK                                                      #zeroOrMoreQuantifier
+    | PLUS                                                          #oneOrMoreQuantifier
+    | QUESTION                                                      #zeroOrOneQuantifier
+    ;
+
+rowPatternDefinitionSeq
+    : rowPatternDefinition (COMMA rowPatternDefinition)*
+    ;
+
+rowPatternDefinition
+    : name=identifier AS condition=booleanExpression
+    ;
+
 lateralView
     : LATERAL VIEW (OUTER)? qualifiedName LEFT_PAREN (expression (COMMA expression)*)? RIGHT_PAREN tblName=identifier (AS? colName+=identifier (COMMA colName+=identifier)*)?
     ;
@@ -1000,6 +1047,7 @@ relationExtension
     : joinRelation
     | pivotClause
     | unpivotClause
+    | matchRecognizeClause
     ;
 
 joinRelation
@@ -1165,6 +1213,14 @@ namedExpression
 
 namedExpressionSeq
     : namedExpression (COMMA namedExpression)*
+    ;
+
+aliasedExpression
+    : expression AS? name=errorCapturingIdentifier
+    ;
+
+aliasedExpressionSeq
+    : aliasedExpression (COMMA aliasedExpression)*
     ;
 
 partitionFieldList

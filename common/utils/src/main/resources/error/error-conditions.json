@@ -1539,6 +1539,42 @@
     ],
     "sqlState" : "23505"
   },
+  "DUPLICATE_PATTERN_VARIABLE" : {
+    "message" : [
+      "MATCH_RECOGNIZE DEFINE clause has duplicate pattern variable: <variableName>."
+    ],
+    "sqlState" : "42710"
+  },
+  "UNDEFINED_PATTERN_VARIABLE" : {
+    "message" : [
+      "MATCH_RECOGNIZE PATTERN references undefined variable: <variableName>. All pattern variables must be defined in the DEFINE clause."
+    ],
+    "sqlState" : "42703"
+  },
+  "MATCH_RECOGNIZE_AGGREGATE_MIXED_QUALIFIERS" : {
+    "message" : [
+      "Aggregate expression <expression> contains attributes with different qualifiers: <qualifiers>. All attributes in the same aggregate function must have the same pattern variable qualifier (or no qualifier)."
+    ],
+    "sqlState" : "42803"
+  },
+  "MATCH_RECOGNIZE_INVALID_MEASURE_EXPRESSION" : {
+    "message" : [
+      "Expression <expression> is neither present in PARTITION BY nor wrapped by an aggregate function. Columns that vary across matched rows must be wrapped by aggregate functions in MATCH_RECOGNIZE MEASURES clause."
+    ],
+    "sqlState" : "42803"
+  },
+  "MATCH_RECOGNIZE_NONDETERMINISTIC_DEFINE" : {
+    "message" : [
+      "MATCH_RECOGNIZE DEFINE clause contains nondeterministic expression <expression> in variable <variableName>. Nondeterministic functions like rand(), uuid() are not allowed in DEFINE predicates because NFA simulation evaluates predicates multiple times per row, which would produce inconsistent results."
+    ],
+    "sqlState" : "42845"
+  },
+  "MATCH_RECOGNIZE_PARTITION_BY_MUST_BE_NAMED" : {
+    "message" : [
+      "MATCH_RECOGNIZE PARTITION BY expression <expression> must be a column reference or have an alias, since partition columns appear in the output."
+    ],
+    "sqlState" : "42601"
+  },
   "DUPLICATE_ROUTINE_PARAMETER_ASSIGNMENT" : {
     "message" : [
       "Call to routine <routineName> is invalid because it includes multiple argument assignments to the same parameter name <parameterName>."
@@ -6791,6 +6827,16 @@
       "LITERAL_TYPE" : {
         "message" : [
           "Literal for '<value>' of <type>."
+        ]
+      },
+      "MATCH_RECOGNIZE_ALTERNATION" : {
+        "message" : [
+          "Alternation (|) in MATCH_RECOGNIZE PATTERN. Only simple sequences of pattern variables are currently supported."
+        ]
+      },
+      "MATCH_RECOGNIZE_QUANTIFIED_GROUP" : {
+        "message" : [
+          "Quantifiers (*, +, ?, {n}, {n,m}) on grouped patterns in MATCH_RECOGNIZE PATTERN. Quantifiers are only supported on simple pattern variables, not on groups like (A B)+."
         ]
       },
       "MULTIPLE_BUCKET_TRANSFORMS" : {

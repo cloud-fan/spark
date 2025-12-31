@@ -860,8 +860,9 @@ object NullPropagation extends Rule[LogicalPlan] {
         Cast(Literal(0L), e.dataType, Option(conf.sessionLocalTimeZone))
       case e @ AggregateExpression(Count(exprs), _, _, _, _) if exprs.forall(isNullLiteral) =>
         Cast(Literal(0L), e.dataType, Option(conf.sessionLocalTimeZone))
-      case ae @ AggregateExpression(Count(exprs), _, false, _, _) if !exprs.exists(_.nullable) =>
-        // This rule should be only triggered when isDistinct field is false.
+      // Skip COUNT(col)->COUNT(1) for UnresolvedMatchRecognize to preserve qualifier info
+      case ae @ AggregateExpression(Count(exprs), _, false, _, _)
+          if !exprs.exists(_.nullable) && !q.isInstanceOf[UnresolvedMatchRecognize] =>
         ae.copy(aggregateFunction = Count(Literal(1)))
 
       case IsNull(c) if !c.nullable => Literal.create(false, BooleanType)

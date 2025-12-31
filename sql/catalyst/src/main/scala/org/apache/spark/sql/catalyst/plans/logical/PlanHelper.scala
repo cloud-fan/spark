@@ -46,6 +46,7 @@ object PlanHelper {
           if !(plan.isInstanceOf[Aggregate] ||
                plan.isInstanceOf[Window] ||
                plan.isInstanceOf[CollectMetrics] ||
+               plan.isInstanceOf[MatchRecognizeMeasures] ||
                onlyInLateralSubquery(plan)) => e
         case e: Generator
           if !(plan.isInstanceOf[Generate] ||

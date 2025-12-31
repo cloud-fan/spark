@@ -505,6 +505,7 @@ class Analyzer(
         ResolveWithCTE,
         ExtractDistributedSequenceID) ++
       Seq(ResolveUpdateEventTimeWatermarkColumn) ++
+      Seq(ResolveMatchRecognize) ++
       extendedResolutionRules : _*),
     Batch("Remove TempResolvedColumn", Once, RemoveTempResolvedColumn),
     Batch("Post-Hoc Resolution", Once,
@@ -1423,6 +1424,8 @@ class Analyzer(
       new ResolveReferencesInSort(catalogManager)
     private val resolveDataFrameDropColumns =
       new ResolveDataFrameDropColumns(catalogManager)
+    private val resolveReferencesInMatchRecognize =
+      new ResolveReferencesInMatchRecognize(catalogManager)
 
     /**
      * Return true if there're conflicting attributes among children's outputs of a plan
@@ -1753,6 +1756,9 @@ class Analyzer(
 
       case d: DataFrameDropColumns if !d.resolved =>
         resolveDataFrameDropColumns(d)
+
+      case m: UnresolvedMatchRecognize if !m.resolved =>
+        resolveReferencesInMatchRecognize(m)
 
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString(conf.maxToStringFields)}")
@@ -4065,6 +4071,24 @@ object CleanupAliases extends Rule[LogicalPlan] with AliasHelper {
         variableColumnName,
         valueColumnNames,
         child)
+
+    // UnresolvedMatchRecognize is always unresolved - just skip cleanup
+    case m: UnresolvedMatchRecognize => m
+
+    case m @ MatchRecognizeMeasures(_, measures, _) =>
+      // Preserve top-level aliases as they define the measure column names
+      val cleanedMeasures = measures.map(trimNonTopLevelAliases(_).asInstanceOf[Alias])
+      m.copy(measures = cleanedMeasures)
+
+    case m @ MatchRecognize(partitionSpec, _, _, patternVarDefs, _, _, _) =>
+      // Preserve top-level aliases as they define the partition/variable names
+      val cleanedPartitionSpec =
+        partitionSpec.map(trimNonTopLevelAliases(_).asInstanceOf[NamedExpression])
+      val cleanedPatternVarDefs =
+        patternVarDefs.map(trimNonTopLevelAliases(_).asInstanceOf[Alias])
+      m.copy(
+        partitionSpec = cleanedPartitionSpec,
+        patternVariableDefinitions = cleanedPatternVarDefs)
 
     // Operators that operate on objects should only have expressions from encoders, which should
     // never have extra aliases.
