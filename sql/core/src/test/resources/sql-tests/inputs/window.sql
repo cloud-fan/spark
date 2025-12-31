@@ -187,6 +187,36 @@ SELECT val, cate,
 count(val) FILTER (WHERE val > 1) OVER(PARTITION BY cate)
 FROM testData ORDER BY cate, val;
 
+-- window aggregate with filter predicate: sum
+SELECT val, cate,
+sum(val) FILTER (WHERE val > 1) OVER(PARTITION BY cate ORDER BY val
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_sum_filtered
+FROM testData ORDER BY cate, val;
+
+-- window aggregate with filter predicate: first_value/last_value with ignoreNulls
+-- This tests that filtering doesn't interfere with the function's own NULL handling
+SELECT val, cate,
+first_value(val) FILTER (WHERE cate = 'a') OVER(ORDER BY val_long
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS first_a,
+last_value(val) FILTER (WHERE cate = 'a') OVER(ORDER BY val_long
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_a
+FROM testData WHERE val IS NOT NULL ORDER BY val_long, cate;
+
+-- window aggregate with filter predicate: multiple aggregates with different filters
+SELECT val, cate,
+sum(val) FILTER (WHERE cate = 'a') OVER(ORDER BY val_long
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS sum_a,
+sum(val) FILTER (WHERE cate = 'b') OVER(ORDER BY val_long
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS sum_b,
+count(val) FILTER (WHERE val > 1) OVER(ORDER BY val_long
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cnt_gt1
+FROM testData WHERE val IS NOT NULL ORDER BY val_long, cate;
+
+-- window aggregate with filter predicate: entire partition frame
+SELECT val, cate,
+sum(val) FILTER (WHERE cate = 'a') OVER(PARTITION BY cate) AS total_sum_filtered
+FROM testData WHERE val IS NOT NULL ORDER BY cate, val;
+
 -- nth_value()/first_value()/any_value() over ()
 SELECT
     employee_name,

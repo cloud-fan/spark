@@ -152,25 +152,34 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
     }
   }
 
-  def assertValidAggregation(a: Aggregate): Unit = {
-    def checkValidAggregateExpression(expr: Expression): Unit = expr match {
-      case expr: AggregateExpression =>
-        val aggFunction = expr.aggregateFunction
-        aggFunction.children.foreach { child =>
-          child.foreach {
-            case expr: AggregateExpression =>
-              expr.failAnalysis(
-                errorClass = "NESTED_AGGREGATE_FUNCTION",
-                messageParameters = Map.empty)
-            case other => // OK
-          }
+  /**
+   * Validates an AggregateExpression for common issues:
+   * - Nested aggregate functions are not allowed
+   * - Non-deterministic expressions in aggregate functions are not allowed
+   */
+  def checkValidAggregateExpression(expr: AggregateExpression): Unit = {
+    val aggFunction = expr.aggregateFunction
+    aggFunction.children.foreach { child =>
+      child.foreach {
+        case nested: AggregateExpression =>
+          nested.failAnalysis(
+            errorClass = "NESTED_AGGREGATE_FUNCTION",
+            messageParameters = Map.empty)
+        case _ => // OK
+      }
 
-          if (!child.deterministic) {
-            child.failAnalysis(
-              errorClass = "AGGREGATE_FUNCTION_WITH_NONDETERMINISTIC_EXPRESSION",
-              messageParameters = Map("sqlExpr" -> toSQLExpr(expr)))
-          }
-        }
+      if (!child.deterministic) {
+        child.failAnalysis(
+          errorClass = "AGGREGATE_FUNCTION_WITH_NONDETERMINISTIC_EXPRESSION",
+          messageParameters = Map("sqlExpr" -> toSQLExpr(expr)))
+      }
+    }
+  }
+
+  def assertValidAggregation(a: Aggregate): Unit = {
+    def checkExpr(expr: Expression): Unit = expr match {
+      case ae: AggregateExpression =>
+        checkValidAggregateExpression(ae)
       case _: Attribute if a.groupingExpressions.isEmpty =>
         a.failAnalysis(
           errorClass = "MISSING_GROUP_BY",
@@ -188,9 +197,9 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
       // expression is not eligible to propagate to upper plan because it is not valid,
       // containing non-group-by or non-aggregate-expressions.
       case WindowExpression(function, spec) =>
-        function.children.foreach(checkValidAggregateExpression)
-        checkValidAggregateExpression(spec)
-      case e => e.children.foreach(checkValidAggregateExpression)
+        function.children.foreach(checkExpr)
+        checkExpr(spec)
+      case e => e.children.foreach(checkExpr)
     }
 
     def checkValidGroupingExprs(expr: Expression): Unit = {
@@ -211,6 +220,6 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
     }
 
     a.groupingExpressions.foreach(checkValidGroupingExprs)
-    a.aggregateExpressions.foreach(checkValidAggregateExpression)
+    a.aggregateExpressions.foreach(checkExpr)
   }
 }

@@ -505,6 +505,7 @@ class Analyzer(
         ResolveWithCTE,
         ExtractDistributedSequenceID) ++
       Seq(ResolveUpdateEventTimeWatermarkColumn) ++
+      Seq(ResolveMatchRecognize) ++
       extendedResolutionRules : _*),
     Batch("Remove TempResolvedColumn", Once, RemoveTempResolvedColumn),
     Batch("Post-Hoc Resolution", Once,
@@ -1423,6 +1424,8 @@ class Analyzer(
       new ResolveReferencesInSort(catalogManager)
     private val resolveDataFrameDropColumns =
       new ResolveDataFrameDropColumns(catalogManager)
+    private val resolveReferencesInMatchRecognize =
+      new ResolveReferencesInMatchRecognize(catalogManager)
 
     /**
      * Return true if there're conflicting attributes among children's outputs of a plan
@@ -1753,6 +1756,9 @@ class Analyzer(
 
       case d: DataFrameDropColumns if !d.resolved =>
         resolveDataFrameDropColumns(d)
+
+      case m: UnresolvedMatchRecognize if !m.resolved =>
+        resolveReferencesInMatchRecognize(m)
 
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString(conf.maxToStringFields)}")
@@ -3315,16 +3321,14 @@ class Analyzer(
             }
             wsc.copy(partitionSpec = newPartitionSpec, orderSpec = newOrderSpec)
 
-          case WindowExpression(ae: AggregateExpression, _) if ae.filter.isDefined =>
-            throw QueryCompilationErrors.windowAggregateFunctionWithFilterNotSupportedError()
-
           // Extract Windowed AggregateExpression
           case we @ WindowExpression(
-              ae @ AggregateExpression(function, _, _, _, _),
+              ae @ AggregateExpression(function, _, _, filter, _),
               spec: WindowSpecDefinition) =>
             val newChildren = function.children.map(extractExpr)
             val newFunction = function.withNewChildren(newChildren).asInstanceOf[AggregateFunction]
-            val newAgg = ae.copy(aggregateFunction = newFunction)
+            val newFilter = filter.map(extractExpr)
+            val newAgg = ae.copy(aggregateFunction = newFunction, filter = newFilter)
             seenWindowAggregates += newAgg
             WindowExpression(newAgg, spec)
 
@@ -4065,6 +4069,21 @@ object CleanupAliases extends Rule[LogicalPlan] with AliasHelper {
         variableColumnName,
         valueColumnNames,
         child)
+
+    // UnresolvedMatchRecognize is always unresolved - just skip cleanup
+    case m: UnresolvedMatchRecognize => m
+
+    case m @ MatchRecognizeAndMeasure(partitionSpec, _, _, patternVarDefs,
+        measures, _, _, _) =>
+      val cleanedPartitionSpec =
+        partitionSpec.map(trimNonTopLevelAliases(_).asInstanceOf[NamedExpression])
+      val cleanedPatternVarDefs =
+        patternVarDefs.map(trimNonTopLevelAliases(_).asInstanceOf[Alias])
+      val cleanedMeasures = measures.map(trimNonTopLevelAliases(_).asInstanceOf[Alias])
+      m.copy(
+        partitionSpec = cleanedPartitionSpec,
+        patternVariableDefinitions = cleanedPatternVarDefs,
+        measures = cleanedMeasures)
 
     // Operators that operate on objects should only have expressions from encoders, which should
     // never have extra aliases.

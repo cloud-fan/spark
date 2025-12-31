@@ -979,6 +979,68 @@ unpivotAlias
     : AS? errorCapturingIdentifier
     ;
 
+matchRecognizeClause
+    : MATCH_RECOGNIZE LEFT_PAREN
+        (PARTITION BY partitionCols=namedExpressionSeq)?
+        (ORDER BY orderCols+=sortItem (COMMA orderCols+=sortItem)*)?
+        (MEASURES measureCols=aliasedExpressionSeq)?
+        rowsPerMatchClause?
+        afterMatchSkipClause?
+        PATTERN LEFT_PAREN patternDef=rowPattern RIGHT_PAREN
+        DEFINE definitionList=rowPatternDefinitionSeq
+      RIGHT_PAREN (AS? errorCapturingIdentifier)?
+    ;
+
+rowsPerMatchClause
+    : ONE ROW PER MATCH                                              #oneRowPerMatch
+    | ALL ROWS PER MATCH OMIT EMPTY MATCHES                          #allRowsPerMatchOmitEmpty
+    | ALL ROWS PER MATCH WITH UNMATCHED ROWS                         #allRowsPerMatchUnmatchedRows
+    | ALL ROWS PER MATCH (SHOW EMPTY MATCHES)?                       #allRowsPerMatchShowEmpty
+    ;
+
+afterMatchSkipClause
+    : AFTER MATCH KW_SKIP PAST LAST ROW                            #skipPastLastRow
+    | AFTER MATCH KW_SKIP TO NEXT ROW                              #skipToNextRow
+    | AFTER MATCH KW_SKIP TO FIRST identifier                      #skipToFirstVariable
+    | AFTER MATCH KW_SKIP TO LAST identifier                       #skipToLastVariable
+    ;
+
+rowPattern
+    : rowPatternSequence (PIPE rowPatternSequence)*
+    ;
+
+rowPatternSequence
+    : rowPatternTerm+
+    ;
+
+rowPatternTerm
+    : rowPatternFactor (rowPatternQuantifier reluctant=QUESTION?)?
+    ;
+
+rowPatternFactor
+    : identifier
+    | LEFT_PAREN rowPattern RIGHT_PAREN
+    | PERMUTE LEFT_PAREN rowPattern (COMMA rowPattern)* RIGHT_PAREN
+    ;
+
+rowPatternQuantifier
+    : ASTERISK                                                      #zeroOrMoreQuantifier
+    | PLUS                                                          #oneOrMoreQuantifier
+    | QUESTION                                                      #zeroOrOneQuantifier
+    | LEFT_BRACE n=INTEGER_VALUE RIGHT_BRACE                        #exactlyQuantifier
+    | LEFT_BRACE n=INTEGER_VALUE COMMA m=INTEGER_VALUE RIGHT_BRACE  #betweenQuantifier
+    | LEFT_BRACE n=INTEGER_VALUE COMMA RIGHT_BRACE                  #atLeastQuantifier
+    | LEFT_BRACE COMMA m=INTEGER_VALUE RIGHT_BRACE                  #atMostQuantifier
+    ;
+
+rowPatternDefinitionSeq
+    : rowPatternDefinition (COMMA rowPatternDefinition)*
+    ;
+
+rowPatternDefinition
+    : name=identifier AS condition=booleanExpression
+    ;
+
 lateralView
     : LATERAL VIEW (OUTER)? qualifiedName LEFT_PAREN (expression (COMMA expression)*)? RIGHT_PAREN tblName=identifier (AS? colName+=identifier (COMMA colName+=identifier)*)?
     ;
@@ -1000,6 +1062,7 @@ relationExtension
     : joinRelation
     | pivotClause
     | unpivotClause
+    | matchRecognizeClause
     ;
 
 joinRelation
@@ -1165,6 +1228,14 @@ namedExpression
 
 namedExpressionSeq
     : namedExpression (COMMA namedExpression)*
+    ;
+
+aliasedExpression
+    : expression AS? name=errorCapturingIdentifier
+    ;
+
+aliasedExpressionSeq
+    : aliasedExpression (COMMA aliasedExpression)*
     ;
 
 partitionFieldList
@@ -1938,6 +2009,7 @@ ansiNonReserved
     | DOUBLE
     | DROP
     | ELSEIF
+    | EMPTY
     | ENFORCED
     | ESCAPED
     | EVOLUTION
@@ -2014,6 +2086,7 @@ ansiNonReserved
     | MACRO
     | MAP
     | MATCHED
+    | MATCHES
     | MATERIALIZED
     | MAX
     | MEASURE
@@ -2034,12 +2107,14 @@ ansiNonReserved
     | NAMESPACES
     | NANOSECOND
     | NANOSECONDS
+    | NEXT
     | NO
     | NONE
     | NORELY
     | NULLS
     | NUMERIC
     | OF
+    | OMIT
     | OPTION
     | OPTIONS
     | OUT
@@ -2051,6 +2126,7 @@ ansiNonReserved
     | PARTITIONED
     | PARTITIONS
     | PERCENTLIT
+    | PERMUTE
     | PIVOT
     | PLACING
     | POSITION
@@ -2151,6 +2227,7 @@ ansiNonReserved
     | UNARCHIVE
     | UNBOUNDED
     | UNCACHE
+    | UNMATCHED
     | UNLOCK
     | UNPIVOT
     | UNSET
@@ -2313,6 +2390,7 @@ nonReserved
     | DROP
     | ELSE
     | ELSEIF
+    | EMPTY
     | END
     | ENFORCED
     | ESCAPE
@@ -2406,6 +2484,7 @@ nonReserved
     | MACRO
     | MAP
     | MATCHED
+    | MATCHES
     | MATERIALIZED
     | MAX
     | MEASURE
@@ -2426,6 +2505,7 @@ nonReserved
     | NAMESPACES
     | NANOSECOND
     | NANOSECONDS
+    | NEXT
     | NO
     | NONE
     | NORELY
@@ -2435,6 +2515,7 @@ nonReserved
     | NUMERIC
     | OF
     | OFFSET
+    | OMIT
     | ONLY
     | OPTION
     | OPTIONS
@@ -2563,6 +2644,7 @@ nonReserved
     | UNCACHE
     | UNIQUE
     | UNKNOWN
+    | UNMATCHED
     | UNLOCK
     | UNPIVOT
     | UNSET

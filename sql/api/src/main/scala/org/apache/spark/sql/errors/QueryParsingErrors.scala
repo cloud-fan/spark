@@ -845,4 +845,37 @@ private[sql] object QueryParsingErrors extends DataTypeErrorsBase {
       messageParameters = Map("parameterMarker" -> ctx.getText),
       ctx = ctx)
   }
+
+  def matchRecognizePartitionByMustBeNamedError(ctx: ParserRuleContext): Throwable = {
+    new ParseException(
+      errorClass = "MATCH_RECOGNIZE_PARTITION_BY_MUST_BE_NAMED",
+      messageParameters = Map("expression" -> ctx.getText),
+      ctx)
+  }
+
+  def unsupportedMatchRecognizeRowsPerMatchMode(
+      mode: String,
+      ctx: ParserRuleContext): Throwable = {
+    new ParseException(
+      errorClass = "UNSUPPORTED_FEATURE.MATCH_RECOGNIZE_ROWS_PER_MATCH_MODE",
+      messageParameters = Map("mode" -> mode),
+      ctx)
+  }
+
+  def unsupportedMatchRecognizeAfterMatchSkipMode(
+      mode: String,
+      ctx: ParserRuleContext): Throwable = {
+    new ParseException(
+      errorClass = "UNSUPPORTED_FEATURE.MATCH_RECOGNIZE_AFTER_MATCH_SKIP_MODE",
+      messageParameters = Map("mode" -> mode),
+      ctx)
+  }
+
+  def matchRecognizePermuteTooFewPatternsError(
+      ctx: ParserRuleContext): Throwable = {
+    new ParseException(
+      errorClass = "MATCH_RECOGNIZE_PERMUTE_TOO_FEW_PATTERNS",
+      messageParameters = Map.empty,
+      ctx)
+  }
 }
